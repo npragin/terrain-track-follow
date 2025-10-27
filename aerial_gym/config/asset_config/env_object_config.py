@@ -596,3 +596,72 @@ class back_wall(asset_state_params):
     per_link_semantic = False
     semantic_id = BACK_WALL_SEMANTIC_ID
     color = [100, 200, 210]
+
+class moving_object_params(asset_state_params):
+    num_assets = 1  # Number of moving objects per environment (reduced for better performance)
+
+    asset_folder = f"{AERIAL_GYM_DIRECTORY}/resources/models/environment_assets/objects"
+    
+    collision_mask = 0  # objects with the same collision mask will not collide
+
+    min_state_ratio = [
+        0.1,   # x position
+        0.1,   # y position  
+        0.2,   # z position (start low)
+        0.0,   # roll
+        0.0,   # pitch
+        0.0,   # yaw
+        1.0,   # quat w
+        0.0,   # vx
+        0.0,   # vy
+        0.0,   # vz
+        0.0,   # wx
+        0.0,   # wy
+        0.0,   # wz
+    ]
+    max_state_ratio = [
+        0.9,   # x position
+        0.9,   # y position
+        0.3,   # z position (keep objects low, quadcopter height)
+        0.0,   # roll
+        0.0,   # pitch
+        0.0,   # yaw
+        1.0,   # quat w
+        0.0,   # vx
+        0.0,   # vy
+        0.0,   # vz
+        0.0,   # wx
+        0.0,   # wy
+        0.0,   # wz
+    ]
+
+    keep_in_env = True  # Keep moving objects in environment
+    collapse_fixed_joints = True
+    per_link_semantic = False
+    semantic_id = -1  # will be assigned incrementally per instance
+    color = [255, 100, 100]  # Red color for moving objects
+    
+    # CRITICAL: Make objects dynamic (movable) instead of kinematic (fixed)
+    fix_base_link = False  # This is the key! Must be False for objects to move
+    disable_gravity = False  # Enable gravity for realistic physics
+    density = 0.5  # Increased density for better collision response
+    
+    # Make objects smaller (quadcopter-sized)
+    # Scale down the objects to be similar in size to a quadcopter
+    # This will be handled by using smaller object files or scaling
+    file = "mini_cube.urdf"  # Use a small cube for consistent quadcopter-sized objects
+    
+    # Physics parameters for better collision detection
+    linear_damping = 0.01  # Very low damping for persistent movement
+    angular_damping = 0.01  # Very low angular damping
+    max_linear_velocity = 2.0  # Reasonable max velocity for movement
+    max_angular_velocity = 5.0  # Reasonable angular velocity
+    
+    # Collision parameters for better ground interaction
+    collision_mask = 0  # Use different collision mask from ground (0 vs 1)
+    armature = 0.01  # Small armature for better collision response
+    
+    # Friction parameters to reduce ground friction
+    lateral_friction = 0.1  # Low lateral friction for sliding movement
+    rolling_friction = 0.01  # Low rolling friction
+    restitution = 0.3  # Some bounce for more dynamic movement

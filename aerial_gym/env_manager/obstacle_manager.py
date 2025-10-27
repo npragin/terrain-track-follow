@@ -26,8 +26,10 @@ class ObstacleManager(BaseManager):
         self.obstacle_linvel = global_tensor_dict["obstacle_linvel"]
         self.obstacle_angvel = global_tensor_dict["obstacle_angvel"]
 
-        # self.obstacle_force_tensors = global_tensor_dict["obstacle_force_tensor"]
-        # self.obstacle_torque_tensors = global_tensor_dict["obstacle_torque_tensor"]
+        # Enable force and torque tensors for dynamic obstacle control
+        self.obstacle_force_tensors = global_tensor_dict["obstacle_force_tensor"]
+        self.obstacle_torque_tensors = global_tensor_dict["obstacle_torque_tensor"]
+
 
     def reset(self):
         # self.controller.reset()
@@ -40,12 +42,29 @@ class ObstacleManager(BaseManager):
     def pre_physics_step(self, actions=None):
         if self.num_assets <= 1 or actions is None:
             return
-        self.obstacle_linvel[:] = actions[:, :, 0:3]
-        self.obstacle_angvel[:] = actions[:, :, 3:6]
+        # self.obstacle_linvel[:] = actions[:, :, 0:3]
+        # self.obstacle_angvel[:] = actions[:, :, 3:6]
         # self.update_states()
         # self.obstacle_wrench[:] = self.controller(actions)
         # self.obstacle_force_tensors[:] = self.obstacle_wrench[:, :, 0:3]
         # self.obstacle_torque_tensors[:] = self.obstacle_wrench[:, :, 3:6]
+
+        # Convert velocity commands to forces for dynamic objects
+        # For moving objects, we need to apply forces rather than set velocities directly
+        target_velocities = actions[:, :, 0:3]  # Linear velocities
+        target_angvel = actions[:, :, 3:6]     # Angular velocities
+        
+        # Calculate velocity error and apply proportional force
+        velocity_error = target_velocities - self.obstacle_linvel
+        angular_velocity_error = target_angvel - self.obstacle_angvel
+        
+        # Apply proportional forces (P controller)
+        force_gain = 4.0  # Proportional gain for linear forces
+        torque_gain = 2.0  # Proportional gain for torques
+        
+        self.obstacle_force_tensors[:] = force_gain * velocity_error
+        self.obstacle_torque_tensors[:] = torque_gain * angular_velocity_error
+
 
     def step(self):
         pass

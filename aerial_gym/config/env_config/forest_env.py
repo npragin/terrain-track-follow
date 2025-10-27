@@ -2,6 +2,7 @@ from aerial_gym.config.asset_config.env_object_config import (
     tree_asset_params,
     object_asset_params,
     bottom_wall,
+    moving_object_params,
 )
 
 import numpy as np
@@ -39,8 +40,9 @@ class ForestEnvCfg:
     class env_config:
         include_asset_type = {
             "trees": True,
-            "objects": True,
+            "objects": False,
             "bottom_wall": True,
+            "moving_objects": True,
         }
 
         # maps the above names to the classes defining the assets. They can be enabled and disabled above in include_asset_type
@@ -48,4 +50,5 @@ class ForestEnvCfg:
             "trees": tree_asset_params,
             "objects": object_asset_params,
             "bottom_wall": bottom_wall,
+            "moving_objects": moving_object_params,
         }
