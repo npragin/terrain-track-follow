@@ -194,6 +194,18 @@ class EnvManager(BaseManager):
                 if not hasattr(self, "terrain_generators"):
                     self.terrain_generators = {}
                 self.terrain_generators[i] = terrain_gen
+                
+                # Add terrain mesh to Warp environment for depth camera raycasting
+                # Note: terrain is NOT an Isaac Gym asset, so it doesn't use global_asset_counter
+                # It uses asset index -1 to mark it as static (not in unfolded_env_vec_root_tensor)
+                if self.cfg.env.use_warp:
+                    # Use segmentation_counter 0 for terrain (or a fixed semantic ID if needed)
+                    terrain_segmentation = 0
+                    # Pass -1 as global_asset_counter since terrain isn't in the asset tensor
+                    self.warp_env.add_terrain_mesh_to_env(
+                        terrain_gen, i, -1, terrain_segmentation
+                    )
+                    # Don't increment global_asset_counter - terrain is not an Isaac Gym asset
 
             # add robot asset in the environment
             self.robot_manager.add_robot_to_env(

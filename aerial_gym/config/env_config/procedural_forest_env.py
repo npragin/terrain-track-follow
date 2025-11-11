@@ -21,11 +21,11 @@ class ProceduralForestEnvCfg:
         render_viewer_every_n_steps = 1  # render the viewer every n steps
         reset_on_collision = True  # reset environment when contact force on quadrotor is above a threshold
         collision_force_threshold = 0.005  # collision force threshold [N]
-        create_ground_plane = True  # create a ground plane
+        create_ground_plane = False  # create a ground plane
         sample_timestep_for_latency = True  # sample the timestep for the latency noise
         perturb_observations = True
         keep_same_env_for_num_episodes = 1
-        write_to_sim_at_every_timestep = True  # write to sim at every timestep
+        write_to_sim_at_every_timestep = False  # write to sim at every timestep
 
         use_warp = True
 

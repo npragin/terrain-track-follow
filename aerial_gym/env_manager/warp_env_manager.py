@@ -41,11 +41,31 @@ class WarpEnv(BaseManager):
         if self.global_vertex_counter == 0:
             return
         # logger.debug("Updating vertex maps per env")
-        self.vertex_maps_per_env_updated[:] = tf_apply(
-            self.unfolded_env_vec_root_tensor[self.CONST_GLOBAL_VERTEX_TO_ASSET_INDEX_TENSOR, 3:7],
-            self.unfolded_env_vec_root_tensor[self.CONST_GLOBAL_VERTEX_TO_ASSET_INDEX_TENSOR, 0:3],
-            self.VERTEX_MAPS_PER_ENV_ORIGINAL[:],
-        )
+        # Terrain vertices use asset index -1 (static, no transform)
+        # First, copy all original vertices (including terrain) to updated maps
+        self.vertex_maps_per_env_updated[:] = self.VERTEX_MAPS_PER_ENV_ORIGINAL[:]
+        
+        # Then, only transform vertices that belong to dynamic assets (not terrain)
+        # Filter out terrain vertices (index -1) and ensure indices are within bounds
+        valid_mask = self.CONST_GLOBAL_VERTEX_TO_ASSET_INDEX_TENSOR >= 0
+        if torch.any(valid_mask):
+            valid_indices = self.CONST_GLOBAL_VERTEX_TO_ASSET_INDEX_TENSOR[valid_mask]
+            # Ensure indices are within bounds of unfolded_env_vec_root_tensor
+            max_index = self.unfolded_env_vec_root_tensor.shape[0] - 1
+            in_bounds_mask = (valid_indices >= 0) & (valid_indices <= max_index)
+            
+            if torch.any(in_bounds_mask):
+                # Get the positions in the full mask where we have valid, in-bounds indices
+                valid_positions = torch.where(valid_mask)[0]
+                safe_positions = valid_positions[in_bounds_mask]
+                safe_indices = valid_indices[in_bounds_mask]
+                
+                self.vertex_maps_per_env_updated[safe_positions] = tf_apply(
+                    self.unfolded_env_vec_root_tensor[safe_indices, 3:7],
+                    self.unfolded_env_vec_root_tensor[safe_indices, 0:3],
+                    self.VERTEX_MAPS_PER_ENV_ORIGINAL[safe_positions],
+                )
+        # Terrain vertices (index -1) remain at their original positions (static)
         # logger.debug("[DONE] Updating vertex maps per env")
 
         # logger.debug("Refitting warp meshes")
@@ -70,6 +90,77 @@ class WarpEnv(BaseManager):
             self.env_meshes.append([])
         else:
             raise ValueError("Environment already exists")
+
+    def add_terrain_mesh_to_env(self, terrain_gen, env_id, global_asset_counter, segmentation_counter):
+        """
+        Convert terrain heightmap to trimesh and add it to Warp environment for depth camera raycasting.
+        
+        Args:
+            terrain_gen: TerrainGenerator instance with heightmap data
+            env_id: Environment ID
+            global_asset_counter: Global asset counter for indexing
+            segmentation_counter: Segmentation counter for terrain (typically 0 or a fixed value)
+        """
+        if terrain_gen is None:
+            return
+        
+        # Get heightmap from terrain generator
+        heightmap = terrain_gen.generate_heightmap(use_cache=True)
+        resolution = terrain_gen.resolution
+        scale_x = terrain_gen.scale_x
+        scale_y = terrain_gen.scale_y
+        amplitude = terrain_gen.amplitude
+        
+        # Create grid of x, y coordinates matching Isaac Gym heightfield transform
+        # Isaac Gym heightfield is centered at (0, 0) with transform offset
+        x = np.linspace(-scale_x / 2.0, scale_x / 2.0, resolution)
+        y = np.linspace(-scale_y / 2.0, scale_y / 2.0, resolution)
+        X, Y = np.meshgrid(x, y)
+        
+        # Heightmap is in range [-amplitude/2, amplitude/2] from terrain generator
+        # Isaac Gym applies: heightmap_normalized = heightmap / amplitude, then offset by amplitude/2
+        # So final z = (heightmap / amplitude) * amplitude + amplitude/2 = heightmap + amplitude/2
+        # This gives range [0, amplitude] which matches Isaac Gym's transform.p.z = amplitude/2.0
+        Z = heightmap + amplitude / 2.0
+        vertices = np.stack([X.flatten(), Y.flatten(), Z.flatten()], axis=1)
+        
+        # Create faces (triangles) for the heightmap
+        # Each grid cell becomes 2 triangles
+        faces = []
+        for i in range(resolution - 1):
+            for j in range(resolution - 1):
+                # Calculate vertex indices for this grid cell
+                idx = i * resolution + j
+                idx_right = i * resolution + (j + 1)
+                idx_down = (i + 1) * resolution + j
+                idx_down_right = (i + 1) * resolution + (j + 1)
+                
+                # Two triangles per cell
+                # Triangle 1: (idx, idx_right, idx_down)
+                faces.append([idx, idx_right, idx_down])
+                # Triangle 2: (idx_right, idx_down_right, idx_down)
+                faces.append([idx_right, idx_down_right, idx_down])
+        
+        faces = np.array(faces, dtype=np.int32)
+        
+        # Create trimesh from vertices and faces
+        terrain_mesh = tm.Trimesh(vertices=vertices, faces=faces)
+        
+        # Add to environment meshes
+        self.env_meshes[env_id].append(terrain_mesh)
+        
+        # Update global counters
+        num_vertices = len(terrain_mesh.vertices)
+        # Use segmentation_counter for terrain (typically 0 or a fixed semantic ID)
+        terrain_segmentation_value = segmentation_counter
+        # Use -1 as asset index for terrain (static, not in unfolded_env_vec_root_tensor)
+        # This will be handled specially in reset_idx to keep terrain vertices static
+        self.global_vertex_to_asset_index_map += [-1] * num_vertices
+        self.global_vertex_counter += num_vertices
+        self.global_vertex_segmentation_list += [terrain_segmentation_value] * num_vertices
+        
+        logger.debug(f"Added terrain mesh to environment {env_id} with {num_vertices} vertices")
+        return None, 1  # Terrain is a single asset
 
     def add_asset_to_env(self, asset_info_dict, env_id, global_asset_counter, segmentation_counter):
         warp_asset = asset_info_dict["warp_asset"]
