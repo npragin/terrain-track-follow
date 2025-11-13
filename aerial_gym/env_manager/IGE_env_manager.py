@@ -448,13 +448,22 @@ class IsaacGymEnv(BaseManager):
             logger.info("Headless mode. Viewer not created.")
         return
 
-    def pre_physics_step(self, actions):
+    def pre_physics_step(self, actions, preserve_terrain_adjusted_positions=None):
         """
         Perform any necessary operations before the physics step
+
+        Args:
+            actions: Actions for the physics step
+            preserve_terrain_adjusted_positions: Optional tensor of env_ids for which to preserve
+                terrain-adjusted robot positions when refreshing. Used to prevent terrain adjustment
+                from being overwritten on the first physics step after reset.
+
         """
         # apply forces and torques to the appropriate rigid bodies
         if self.cfg.env.write_to_sim_at_every_timestep:
-            self.write_to_sim(refresh_robot_state=True)
+            self.write_to_sim(
+                refresh_robot_state=True, preserve_terrain_adjusted_positions=preserve_terrain_adjusted_positions
+            )
         self.gym.apply_rigid_body_force_tensors(
             self.sim,
             gymtorch.unwrap_tensor(self.global_tensor_dict["global_force_tensor"]),
@@ -530,7 +539,7 @@ class IsaacGymEnv(BaseManager):
             env_ids
         ]
 
-    def write_to_sim(self, refresh_robot_state=False):
+    def write_to_sim(self, refresh_robot_state=False, preserve_terrain_adjusted_positions=None):
         """
         Write the tensors to the simulation.
 
@@ -539,12 +548,29 @@ class IsaacGymEnv(BaseManager):
                 This ensures robot state matches Isaac Gym's internal state while preserving
                 asset state modifications (e.g., moving targets). Required when
                 write_to_sim_at_every_timestep=True to prevent writing stale robot state.
+            preserve_terrain_adjusted_positions: Optional tensor of env_ids for which to preserve
+                terrain-adjusted robot positions when refreshing. Used to prevent terrain adjustment
+                from being overwritten on the first physics step after reset.
 
         """
         if refresh_robot_state:
             asset_state_backup = self.global_tensor_dict["env_asset_state_tensor"].clone()
+
+            # If preserving terrain-adjusted positions, backup robot state before refresh
+            robot_state_backup = None
+            if preserve_terrain_adjusted_positions is not None and len(preserve_terrain_adjusted_positions) > 0:
+                robot_state_backup = self.global_tensor_dict["robot_state_tensor"][
+                    preserve_terrain_adjusted_positions, 0:3
+                ].clone()
+
             self.gym.refresh_actor_root_state_tensor(self.sim)
             self.global_tensor_dict["env_asset_state_tensor"][:] = asset_state_backup
+
+            # Restore terrain-adjusted positions if needed
+            if robot_state_backup is not None:
+                self.global_tensor_dict["robot_state_tensor"][preserve_terrain_adjusted_positions, 0:3] = (
+                    robot_state_backup
+                )
 
         self.gym.set_actor_root_state_tensor(
             self.sim,

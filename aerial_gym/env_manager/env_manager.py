@@ -194,7 +194,7 @@ class EnvManager(BaseManager):
                 if not hasattr(self, "terrain_generators"):
                     self.terrain_generators = {}
                 self.terrain_generators[i] = terrain_gen
-                
+
                 # Add terrain mesh to Warp environment for depth camera raycasting
                 # Note: terrain is NOT an Isaac Gym asset, so it doesn't use global_asset_counter
                 # It uses asset index -1 to mark it as static (not in unfolded_env_vec_root_tensor)
@@ -202,9 +202,7 @@ class EnvManager(BaseManager):
                     # Use segmentation_counter 0 for terrain (or a fixed semantic ID if needed)
                     terrain_segmentation = 0
                     # Pass -1 as global_asset_counter since terrain isn't in the asset tensor
-                    self.warp_env.add_terrain_mesh_to_env(
-                        terrain_gen, i, -1, terrain_segmentation
-                    )
+                    self.warp_env.add_terrain_mesh_to_env(terrain_gen, i, -1, terrain_segmentation)
                     # Don't increment global_asset_counter - terrain is not an Isaac Gym asset
 
             # add robot asset in the environment
@@ -319,6 +317,7 @@ class EnvManager(BaseManager):
         self.robot_manager.reset_idx(env_ids)
 
         # Ensure robot spawns above terrain
+        terrain_adjusted_env_ids = None
         if (
             hasattr(self, "terrain_generators")
             and hasattr(self.cfg.env, "enable_terrain")
@@ -327,6 +326,8 @@ class EnvManager(BaseManager):
             robot_state = self.robot_manager.robot.robot_state
             robot_positions = robot_state[env_ids, 0:3].clone()
             env_ids_list = env_ids.cpu().numpy() if isinstance(env_ids, torch.Tensor) else env_ids
+
+            terrain_adjusted_env_ids = []
 
             for idx, env_id in enumerate(env_ids_list):
                 if env_id in self.terrain_generators:
@@ -342,10 +343,23 @@ class EnvManager(BaseManager):
                     current_z = robot_positions[idx, 2].item()
                     if current_z < min_robot_z:
                         robot_positions[idx, 2] = min_robot_z
+                        terrain_adjusted_env_ids.append(env_id)
 
             robot_state[env_ids, 0:3] = robot_positions
 
-        self.IGE_env.write_to_sim()
+            # Store which envs had terrain adjustment applied (for first physics step after reset)
+            # Only mark the env_ids that actually had terrain adjustment applied
+            if terrain_adjusted_env_ids:
+                if not hasattr(self, "_terrain_adjusted_env_ids"):
+                    self._terrain_adjusted_env_ids = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+                # Only mark the env_ids that were actually adjusted, not all reset env_ids
+                terrain_adjusted_env_ids_tensor = torch.tensor(terrain_adjusted_env_ids, device=self.device)
+                self._terrain_adjusted_env_ids[terrain_adjusted_env_ids_tensor] = True
+
+        # Write to Isaac Gym without refreshing robot state during reset
+        # This ensures terrain-adjusted position (if applied) is written correctly
+        self.IGE_env.write_to_sim(refresh_robot_state=False)
+
         self.sim_steps[env_ids] = 0
 
     def log_memory_use(self):
@@ -374,8 +388,16 @@ class EnvManager(BaseManager):
         self.asset_manager.pre_physics_step(env_actions)
         # apply actions to obstacle manager
         self.obstacle_manager.pre_physics_step(env_actions)
+
+        # Get env_ids that had terrain adjustment applied (for first physics step after reset)
+        preserve_terrain_adjusted_positions = None
+        if hasattr(self, "_terrain_adjusted_env_ids") and torch.any(self._terrain_adjusted_env_ids):
+            preserve_terrain_adjusted_positions = torch.where(self._terrain_adjusted_env_ids)[0]
+            # Clear the flag after using it (only preserve on first physics step after reset)
+            self._terrain_adjusted_env_ids[:] = False
+
         # then the simulator applies them here
-        self.IGE_env.pre_physics_step(actions)
+        self.IGE_env.pre_physics_step(actions, preserve_terrain_adjusted_positions=preserve_terrain_adjusted_positions)
         # if warp is used, the warp environment applies the actions here
         # If you change the mesh, refit() needs to be called (expensive).
         if self.use_warp:

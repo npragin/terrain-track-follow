@@ -1,21 +1,18 @@
 import time
-import isaacgym
 
-# isort: on
-import torch
+from aerial_gym.config.task_config.track_follow_task_config import (
+    task_config as track_follow_task_config,
+)
+from aerial_gym.examples.track_follow.sf_inference_class import NN_Inference_Class
+from aerial_gym.examples.track_follow.track_follow_task import TrackFollowTask
+from aerial_gym.registry.task_registry import task_registry
 from aerial_gym.rl_training.sample_factory.aerialgym_examples.train_aerialgym import (
     parse_aerialgym_cfg,
 )
 from aerial_gym.utils import get_args
-from aerial_gym.registry.task_registry import task_registry
 
-
-from aerial_gym.examples.track_follow.track_follow_task import TrackFollowTask
-from aerial_gym.examples.track_follow.sf_inference_class import NN_Inference_Class
-
-import matplotlib
-import numpy as np
-from PIL import Image
+# isort: off
+import torch
 
 
 def sample_command(args):
@@ -25,9 +22,7 @@ def sample_command(args):
     # depth_frames = []
     # merged_image_frames = []
 
-    rl_task = task_registry.make_task(
-        "track_follow_task", seed=42, use_warp=use_warp, headless=headless
-    )
+    rl_task = task_registry.make_task("track_follow_task", seed=42, use_warp=use_warp, headless=headless)
     print("Number of environments", rl_task.num_envs)
     command_actions = torch.zeros((rl_task.num_envs, rl_task.task_config.action_space_dim))
     command_actions[:, 0] = 1.5
@@ -126,9 +121,7 @@ if __name__ == "__main__":
     task_registry.register_task(
         task_name="track_follow_task",
         task_class=TrackFollowTask,
-        task_config=task_registry.get_task_config(
-            "navigation_task"
-        ),  # same config as navigation task
+        task_config=track_follow_task_config,
     )
     args = get_args()
     sample_command(args)
