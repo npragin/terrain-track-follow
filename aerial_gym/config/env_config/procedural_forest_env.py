@@ -15,12 +15,8 @@ class ProceduralForestEnvCfg:
         # e.g. motion of obstacles, etc.
         env_spacing = 5.0  # not used with heightfields/trimeshes
 
-        num_physics_steps_per_env_step_mean = (
-            10  # number of steps between camera renders mean
-        )
-        num_physics_steps_per_env_step_std = (
-            0  # number of steps between camera renders std
-        )
+        num_physics_steps_per_env_step_mean = 10  # number of steps between camera renders mean
+        num_physics_steps_per_env_step_std = 0  # number of steps between camera renders std
 
         render_viewer_every_n_steps = 1  # render the viewer every n steps
         reset_on_collision = True  # reset environment when contact force on quadrotor is above a threshold
@@ -29,7 +25,7 @@ class ProceduralForestEnvCfg:
         sample_timestep_for_latency = True  # sample the timestep for the latency noise
         perturb_observations = True
         keep_same_env_for_num_episodes = 1
-        write_to_sim_at_every_timestep = False  # write to sim at every timestep
+        write_to_sim_at_every_timestep = True  # write to sim at every timestep (required for moving target)
 
         use_warp = True
 

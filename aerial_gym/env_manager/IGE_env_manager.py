@@ -454,7 +454,7 @@ class IsaacGymEnv(BaseManager):
         """
         # apply forces and torques to the appropriate rigid bodies
         if self.cfg.env.write_to_sim_at_every_timestep:
-            self.write_to_sim()
+            self.write_to_sim(refresh_robot_state=True)
         self.gym.apply_rigid_body_force_tensors(
             self.sim,
             gymtorch.unwrap_tensor(self.global_tensor_dict["global_force_tensor"]),
@@ -530,10 +530,22 @@ class IsaacGymEnv(BaseManager):
             env_ids
         ]
 
-    def write_to_sim(self):
+    def write_to_sim(self, refresh_robot_state=False):
         """
-        Write the tensors to the simulation
+        Write the tensors to the simulation.
+
+        Args:
+            refresh_robot_state: If True, refresh robot state from Isaac Gym before writing.
+                This ensures robot state matches Isaac Gym's internal state while preserving
+                asset state modifications (e.g., moving targets). Required when
+                write_to_sim_at_every_timestep=True to prevent writing stale robot state.
+
         """
+        if refresh_robot_state:
+            asset_state_backup = self.global_tensor_dict["env_asset_state_tensor"].clone()
+            self.gym.refresh_actor_root_state_tensor(self.sim)
+            self.global_tensor_dict["env_asset_state_tensor"][:] = asset_state_backup
+
         self.gym.set_actor_root_state_tensor(
             self.sim,
             gymtorch.unwrap_tensor(self.global_tensor_dict["unfolded_env_asset_state_tensor"]),
