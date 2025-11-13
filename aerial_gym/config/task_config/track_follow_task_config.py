@@ -6,11 +6,11 @@ from aerial_gym import AERIAL_GYM_DIRECTORY
 class task_config:
     seed = -1
     sim_name = "base_sim"
-    env_name = "env_with_obstacles"
+    env_name = "procedural_forest"
     robot_name = "lmf2"
     controller_name = "lmf2_velocity_control"
     args = {}
-    num_envs = 1024
+    num_envs = 1
     use_warp = True
     headless = True
     device = "cuda:0"
