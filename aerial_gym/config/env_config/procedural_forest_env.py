@@ -15,8 +15,12 @@ class ProceduralForestEnvCfg:
         # e.g. motion of obstacles, etc.
         env_spacing = 5.0  # not used with heightfields/trimeshes
 
-        num_physics_steps_per_env_step_mean = 10  # number of steps between camera renders mean
-        num_physics_steps_per_env_step_std = 0  # number of steps between camera renders std
+        num_physics_steps_per_env_step_mean = (
+            10  # number of steps between camera renders mean
+        )
+        num_physics_steps_per_env_step_std = (
+            0  # number of steps between camera renders std
+        )
 
         render_viewer_every_n_steps = 1  # render the viewer every n steps
         reset_on_collision = True  # reset environment when contact force on quadrotor is above a threshold
@@ -29,8 +33,15 @@ class ProceduralForestEnvCfg:
 
         use_warp = True
 
+        # Environment bounds [x_min, y_min, z_min] to [x_max, y_max, z_max] in meters
+        # Terrain starts at z=0 and extends up to terrain_amplitude
+        lower_bound_min = [-50.0, -50.0, 0.0]
+        lower_bound_max = [-50.0, -50.0, 0.0]
+        upper_bound_min = [50.0, 50.0, 30.0]
+        upper_bound_max = [50.0, 50.0, 30.0]
+
         # Tree density: trees per square meter (num_assets = tree_density * env_area)
-        tree_density = 0.004  # 40 trees per 100m × 100m environment
+        tree_density = 0.01  # 100 trees per 100m × 100m environment
 
         # Terrain generation configuration (Simplex noise)
         enable_terrain = True
@@ -42,13 +53,6 @@ class ProceduralForestEnvCfg:
         terrain_persistence = 0.6  # Amplitude multiplier per octave
         # Terrain seed: None = random per environment (fixed across resets due to Isaac Gym limitation)
         terrain_seed = None
-
-        # Environment bounds [x_min, y_min, z_min] to [x_max, y_max, z_max] in meters
-        # Terrain starts at z=0 and extends up to terrain_amplitude
-        lower_bound_min = [-50.0, -50.0, 0.0]
-        lower_bound_max = [-50.0, -50.0, 0.0]
-        upper_bound_min = [50.0, 50.0, 30.0]
-        upper_bound_max = [50.0, 50.0, 30.0]
 
         # Target movement configuration
         target_velocity_change_interval = 100  # Steps between velocity changes
