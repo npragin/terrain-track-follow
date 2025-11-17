@@ -37,7 +37,7 @@ def sample_command(args):
         obs, rewards, termination, truncation, infos = rl_task.step(command_actions)
 
         obs["obs"] = obs["observations"]
-        # print(obs["observations"].shape)
+
         action = nn_model.get_action(obs)
         # print("Action", action, action.shape)
         action = torch.tensor(action).expand(rl_task.num_envs, -1)

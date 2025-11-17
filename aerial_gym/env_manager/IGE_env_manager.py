@@ -25,7 +25,7 @@ class IsaacGymEnv(BaseManager):
         self.env_tensor_bounds_max = None
         self.asset_handles = []
         self.env_handles = []
-        self.heightfield_handles = {}  # Store heightfield handles per environment
+        self.shared_terrain_generator = None  # Shared terrain generator for all environments
         self.num_rigid_bodies_robot = None
         self.has_IGE_cameras = has_IGE_cameras
         self.sim_has_dof = False
@@ -123,20 +123,12 @@ class IsaacGymEnv(BaseManager):
         self.gym.add_ground(self.sim, plane_params)
         return
 
-    def create_terrain_heightfield(self, env_id: int, env_handle):
+    def create_shared_heightfield(self):
         """
-        Create a heightfield terrain for a specific environment using Simplex noise.
+        Create a single shared heightfield terrain for all environments using Simplex noise.
 
-        Note: Isaac Gym heightfields are static once created and cannot be updated or removed.
-        Returns the terrain generator for height sampling.
-
-        Args:
-            env_id: Environment ID
-            env_handle: Isaac Gym environment handle
-
-        Returns:
-            TerrainGenerator instance for this environment
-
+        Note: Isaac Gym heightfields are shared across all environments by design.
+        This method should be called once before creating environments.
         """
         if not hasattr(self.cfg.env, "enable_terrain") or not self.cfg.env.enable_terrain:
             return
@@ -154,7 +146,7 @@ class IsaacGymEnv(BaseManager):
         if seed is None:
             import random
 
-            seed = env_id * 1000 + random.randint(0, 1000)
+            seed = random.randint(0, 1000000)
 
         terrain_gen = TerrainGenerator(
             resolution=resolution,
@@ -184,11 +176,10 @@ class IsaacGymEnv(BaseManager):
         heightfield_params.transform.p.y = -scale_y / 2.0
         heightfield_params.transform.p.z = amplitude / 2.0  # Offset so terrain starts at z=0
 
-        heightfield_handle = self.gym.add_heightfield(self.sim, heightfield_data, heightfield_params)
-        self.heightfield_handles[env_id] = heightfield_handle
-        logger.debug(f"Created terrain heightfield for environment {env_id}")
+        self.gym.add_heightfield(self.sim, heightfield_data, heightfield_params)
 
-        return terrain_gen  # Return generator for height sampling
+        # Store terrain generator (needed for height sampling, Warp mesh generation, etc.)
+        self.shared_terrain_generator = terrain_gen
 
     def create_env(self, env_id):
         """

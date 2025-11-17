@@ -16,13 +16,13 @@ class AssetManager:
         self,
         global_tensor_dict,
         num_keep_in_env,
-        terrain_generators=None,
+        terrain_generator=None,
         cfg=None,
         global_asset_dicts=None,
         sim_config=None,
     ):
         self.init_tensors(global_tensor_dict, num_keep_in_env)
-        self.terrain_generators = terrain_generators if terrain_generators else {}
+        self.terrain_generator = terrain_generator
         self.cfg = cfg
         self.global_asset_dicts = global_asset_dicts
         self.sim_config = sim_config
@@ -75,20 +75,18 @@ class AssetManager:
         target_orientations = self.env_asset_state_tensor[:, self.target_asset_idx, 3:7].clone()
 
         # Update Z based on terrain height at X, Y position
-        if self.terrain_generators:
-            env_ids_list = list(range(target_positions.shape[0]))
-            for env_id in env_ids_list:
-                if env_id in self.terrain_generators:
-                    terrain_gen = self.terrain_generators[env_id]
-                    heightmap = terrain_gen.generate_heightmap(use_cache=True)
+        if self.terrain_generator is not None:
+            terrain_gen = self.terrain_generator
+            heightmap = terrain_gen.generate_heightmap(use_cache=True)
 
-                    x = target_positions[env_id, 0].item()
-                    y = target_positions[env_id, 1].item()
-                    terrain_height = terrain_gen.sample_height(x, y, heightmap)
-                    terrain_offset = terrain_gen.amplitude / 2.0
+            for env_id in range(target_positions.shape[0]):
+                x = target_positions[env_id, 0].item()
+                y = target_positions[env_id, 1].item()
+                terrain_height = terrain_gen.sample_height(x, y, heightmap)
+                terrain_offset = terrain_gen.amplitude / 2.0
 
-                    # Set Z to terrain surface (no offset)
-                    target_positions[env_id, 2] = terrain_height + terrain_offset
+                # Set Z to terrain surface (no offset)
+                target_positions[env_id, 2] = terrain_height + terrain_offset
 
         # Keep orientation upright (no roll, no pitch) - identity quaternion [0, 0, 0, 1]
         target_orientations[:, 0] = 0.0  # x
@@ -191,19 +189,18 @@ class AssetManager:
             ratio=sampled_asset_state_ratio[..., 0:3],
         )[env_ids, :, :]
 
-        if self.terrain_generators:
+        if self.terrain_generator is not None:
+            terrain_gen = self.terrain_generator
+            heightmap = terrain_gen.generate_heightmap(use_cache=True)
             env_ids_list = env_ids.cpu().numpy() if isinstance(env_ids, torch.Tensor) else env_ids
-            for idx, env_id in enumerate(env_ids_list):
-                if env_id in self.terrain_generators:
-                    terrain_gen = self.terrain_generators[env_id]
-                    heightmap = terrain_gen.generate_heightmap(use_cache=True)
 
-                    for asset_idx in range(positions.shape[1]):
-                        x = positions[idx, asset_idx, 0].item()
-                        y = positions[idx, asset_idx, 1].item()
-                        terrain_height = terrain_gen.sample_height(x, y, heightmap)
-                        terrain_offset = terrain_gen.amplitude / 2.0
-                        positions[idx, asset_idx, 2] = terrain_height + terrain_offset
+            for idx in range(len(env_ids_list)):
+                for asset_idx in range(positions.shape[1]):
+                    x = positions[idx, asset_idx, 0].item()
+                    y = positions[idx, asset_idx, 1].item()
+                    terrain_height = terrain_gen.sample_height(x, y, heightmap)
+                    terrain_offset = terrain_gen.amplitude / 2.0
+                    positions[idx, asset_idx, 2] = terrain_height + terrain_offset
 
         self.env_asset_state_tensor[env_ids, :, 0:3] = positions
 

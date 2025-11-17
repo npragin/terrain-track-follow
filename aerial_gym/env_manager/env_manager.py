@@ -178,6 +178,15 @@ class EnvManager(BaseManager):
             self.IGE_env.create_ground_plane()
             logger.info("[DONE] Creating ground plane in Isaac Gym Simulation")
 
+        # Create shared heightfield before environment loop (if terrain is enabled)
+        # Isaac Gym heightfields are shared across all environments by design
+        self.shared_terrain_generator = None
+        if hasattr(self.cfg.env, "enable_terrain") and self.cfg.env.enable_terrain:
+            logger.info("Creating shared heightfield for all environments")
+            self.IGE_env.create_shared_heightfield()
+            self.shared_terrain_generator = self.IGE_env.shared_terrain_generator
+            logger.info("Shared heightfield created successfully")
+
         for i in range(self.cfg.env.num_envs):
             logger.debug(f"Populating environment {i}")
             if i % 1000 == 0:
@@ -187,23 +196,10 @@ class EnvManager(BaseManager):
             if self.cfg.env.use_warp:
                 self.warp_env.create_env(i)
 
-            # Create terrain heightfield if enabled
-            if hasattr(self.cfg.env, "enable_terrain") and self.cfg.env.enable_terrain:
-                terrain_gen = self.IGE_env.create_terrain_heightfield(i, env_handle)
-                # Store terrain generator for height sampling (can be used for tree placement)
-                if not hasattr(self, "terrain_generators"):
-                    self.terrain_generators = {}
-                self.terrain_generators[i] = terrain_gen
-
-                # Add terrain mesh to Warp environment for depth camera raycasting
-                # Note: terrain is NOT an Isaac Gym asset, so it doesn't use global_asset_counter
-                # It uses asset index -1 to mark it as static (not in unfolded_env_vec_root_tensor)
-                if self.cfg.env.use_warp:
-                    # Use segmentation_counter 0 for terrain (or a fixed semantic ID if needed)
-                    terrain_segmentation = 0
-                    # Pass -1 as global_asset_counter since terrain isn't in the asset tensor
-                    self.warp_env.add_terrain_mesh_to_env(terrain_gen, i, -1, terrain_segmentation)
-                    # Don't increment global_asset_counter - terrain is not an Isaac Gym asset
+            # Add terrain mesh to Warp environment for depth camera raycasting
+            if self.shared_terrain_generator is not None and self.cfg.env.use_warp:
+                terrain_segmentation = 0
+                self.warp_env.add_terrain_mesh_to_env(self.shared_terrain_generator, i, -1, terrain_segmentation)
 
             # add robot asset in the environment
             self.robot_manager.add_robot_to_env(
@@ -284,13 +280,13 @@ class EnvManager(BaseManager):
             if not self.warp_env.prepare_for_simulation(self.global_tensor_dict):
                 raise Exception("Failed to prepare the simulation")
 
-        # Pass terrain generators to AssetManager for height sampling
-        terrain_gens = getattr(self, "terrain_generators", {})
+        # Pass shared terrain generator to AssetManager for height sampling
+        shared_terrain_gen = getattr(self, "shared_terrain_generator", None)
         global_asset_dicts = getattr(self, "global_asset_dicts", None)
         self.asset_manager = AssetManager(
             self.global_tensor_dict,
             self.keep_in_env,
-            terrain_generators=terrain_gens,
+            terrain_generator=shared_terrain_gen,
             cfg=self.cfg,
             global_asset_dicts=global_asset_dicts,
             sim_config=self.sim_config,
@@ -319,7 +315,8 @@ class EnvManager(BaseManager):
         # Ensure robot spawns above terrain
         terrain_adjusted_env_ids = None
         if (
-            hasattr(self, "terrain_generators")
+            hasattr(self, "shared_terrain_generator")
+            and self.shared_terrain_generator is not None
             and hasattr(self.cfg.env, "enable_terrain")
             and self.cfg.env.enable_terrain
         ):
@@ -328,22 +325,20 @@ class EnvManager(BaseManager):
             env_ids_list = env_ids.cpu().numpy() if isinstance(env_ids, torch.Tensor) else env_ids
 
             terrain_adjusted_env_ids = []
+            terrain_gen = self.shared_terrain_generator
+            heightmap = terrain_gen.generate_heightmap(use_cache=True)
 
             for idx, env_id in enumerate(env_ids_list):
-                if env_id in self.terrain_generators:
-                    terrain_gen = self.terrain_generators[env_id]
-                    heightmap = terrain_gen.generate_heightmap(use_cache=True)
+                x = robot_positions[idx, 0].item()
+                y = robot_positions[idx, 1].item()
+                terrain_height = terrain_gen.sample_height(x, y, heightmap)
+                terrain_offset = terrain_gen.amplitude / 2.0
+                min_robot_z = terrain_height + terrain_offset + 1.0
 
-                    x = robot_positions[idx, 0].item()
-                    y = robot_positions[idx, 1].item()
-                    terrain_height = terrain_gen.sample_height(x, y, heightmap)
-                    terrain_offset = terrain_gen.amplitude / 2.0
-                    min_robot_z = terrain_height + terrain_offset + 1.0
-
-                    current_z = robot_positions[idx, 2].item()
-                    if current_z < min_robot_z:
-                        robot_positions[idx, 2] = min_robot_z
-                        terrain_adjusted_env_ids.append(env_id)
+                current_z = robot_positions[idx, 2].item()
+                if current_z < min_robot_z:
+                    robot_positions[idx, 2] = min_robot_z
+                    terrain_adjusted_env_ids.append(env_id)
 
             robot_state[env_ids, 0:3] = robot_positions
 

@@ -1,13 +1,11 @@
 import os
 import random
-
-from isaacgym import gymapi
-from aerial_gym.assets.warp_asset import WarpAsset
-from aerial_gym.assets.isaacgym_asset import IsaacGymAsset
-
 from collections import deque
 
+from isaacgym import gymapi
 
+from aerial_gym.assets.isaacgym_asset import IsaacGymAsset
+from aerial_gym.assets.warp_asset import WarpAsset
 from aerial_gym.utils.logging import CustomLogger
 
 logger = CustomLogger("asset_loader")
@@ -56,10 +54,7 @@ class AssetLoader:
         selected_files = random.choices(available_assets, k=num_assets)
         return selected_files
 
-    def load_selected_file_from_config(
-        self, asset_type, asset_class_config, selected_file, is_robot=False
-    ):
-
+    def load_selected_file_from_config(self, asset_type, asset_class_config, selected_file, is_robot=False):
         asset_options_for_class = asset_class_to_AssetOptions(asset_class_config)
         filepath = os.path.join(asset_class_config.asset_folder, selected_file)
 
@@ -95,18 +90,14 @@ class AssetLoader:
         if len(list(asset_class_config.semantic_masked_links.values())) > 0:
             max_list_vals = max(list(asset_class_config.semantic_masked_links.values()))
 
-        self.max_loaded_semantic_id = max(
-            self.max_loaded_semantic_id, asset_class_config.semantic_id, max_list_vals
-        )
+        self.max_loaded_semantic_id = max(self.max_loaded_semantic_id, asset_class_config.semantic_id, max_list_vals)
 
         asset_name = asset_type
 
         # get robot sensor config
         robot_sensor_config = self.global_sim_dict["robot_config"].sensor_config
         use_camera_collision_mesh = (
-            robot_sensor_config.camera_config.use_collision_geometry
-            if robot_sensor_config.enable_camera
-            else False
+            robot_sensor_config.camera_config.use_collision_geometry if robot_sensor_config.enable_camera else False
         )
 
         if is_robot == False:
@@ -124,9 +115,7 @@ class AssetLoader:
                         + "configuration file."
                     )
                     logger.warning(msg_str)
-            elif (
-                use_camera_collision_mesh != asset_class_config.use_collision_mesh_instead_of_visual
-            ):
+            elif use_camera_collision_mesh != asset_class_config.use_collision_mesh_instead_of_visual:
                 msg_str = (
                     "Choosing between collision and visual meshes per asset is not supported"
                     + "for Isaac Gym rendering pipeline. If the Isaac Gym rendering pipeline is selected, "
@@ -159,16 +148,12 @@ class AssetLoader:
                 continue
             if num_assets > 0:
                 if asset_class_config.file is None:
-                    selected_files = self.randomly_pick_assets_from_folder(
-                        asset_class_config.asset_folder, num_assets
-                    )
+                    selected_files = self.randomly_pick_assets_from_folder(asset_class_config.asset_folder, num_assets)
                 else:
                     selected_files = [asset_class_config.file] * num_assets
 
                 for selected_file in selected_files:
-                    asset_info_dict = self.load_selected_file_from_config(
-                        asset_type, asset_class_config, selected_file
-                    )
+                    asset_info_dict = self.load_selected_file_from_config(asset_type, asset_class_config, selected_file)
                     if asset_info_dict["keep_in_env"]:
                         ordered_asset_list.appendleft(asset_info_dict)
                         logger.debug(f"Asset {asset_type} kept in env")

@@ -47,7 +47,7 @@ class ProceduralForestEnvCfg:
         terrain_octaves = 8  # Number of noise layers
         terrain_lacunarity = 2.0  # Frequency multiplier per octave
         terrain_persistence = 0.6  # Amplitude multiplier per octave
-        # Terrain seed: None = random per environment (fixed across resets due to Isaac Gym limitation)
+        # Terrain seed: None = random (fixed across resets due to Isaac Gym limitation)
         terrain_seed = None
 
         # Target movement configuration
