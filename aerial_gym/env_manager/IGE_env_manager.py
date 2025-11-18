@@ -185,21 +185,31 @@ class IsaacGymEnv(BaseManager):
         """
         Create an environment with the given id
         """
-        min_bound_vec3 = gymapi.Vec3(
-            self.cfg.env.lower_bound_min[0],
-            self.cfg.env.lower_bound_min[1],
-            self.cfg.env.lower_bound_min[2],
-        )
-        max_bound_vec3 = gymapi.Vec3(
-            self.cfg.env.upper_bound_max[0],
-            self.cfg.env.upper_bound_max[1],
-            self.cfg.env.upper_bound_max[2],
-        )
+        # Determine grid layout based on config
+        overlap_environments = getattr(self.cfg.env, "overlap_environments", False)
+
+        if overlap_environments:
+            min_bound_vec3 = gymapi.Vec3(0.0, 0.0, 0.0)
+            max_bound_vec3 = gymapi.Vec3(0.0, 0.0, 0.0)
+            num_per_row = self.cfg.env.num_envs
+        else:
+            min_bound_vec3 = gymapi.Vec3(
+                self.cfg.env.lower_bound_min[0],
+                self.cfg.env.lower_bound_min[1],
+                self.cfg.env.lower_bound_min[2],
+            )
+            max_bound_vec3 = gymapi.Vec3(
+                self.cfg.env.upper_bound_max[0],
+                self.cfg.env.upper_bound_max[1],
+                self.cfg.env.upper_bound_max[2],
+            )
+            num_per_row = int(np.sqrt(self.cfg.env.num_envs))
+
         env_handle = self.gym.create_env(
             self.sim,
             min_bound_vec3,
             max_bound_vec3,
-            int(np.sqrt(self.cfg.env.num_envs)),
+            num_per_row,
         )
         if len(self.env_handles) <= env_id:
             self.env_handles.append(env_handle)

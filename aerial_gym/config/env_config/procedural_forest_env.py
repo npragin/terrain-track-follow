@@ -14,6 +14,7 @@ class ProceduralForestEnvCfg:
         # some of them can be used to control various entities in the environment
         # e.g. motion of obstacles, etc.
         env_spacing = 5.0  # not used with heightfields/trimeshes
+        overlap_environments = True  # If True, all environments overlap at origin to share heightfield
 
         num_physics_steps_per_env_step_mean = 10  # number of steps between camera renders mean
         num_physics_steps_per_env_step_std = 0  # number of steps between camera renders std
