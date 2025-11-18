@@ -262,10 +262,10 @@ class tree_asset_params(asset_state_params):
     ]
 
     collapse_fixed_joints = True
-    per_link_semantic = True
+    per_link_semantic = False  # Disabled for track follow - use single semantic ID per tree instead of per-link
     keep_in_env = True
 
-    semantic_id = -1  # TREE_SEMANTIC_ID
+    semantic_id = TREE_SEMANTIC_ID  # Use fixed TREE_SEMANTIC_ID (2) for all trees
     color = [70, 200, 100]
 
     semantic_masked_links = {}
