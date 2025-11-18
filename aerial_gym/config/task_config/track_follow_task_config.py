@@ -7,7 +7,7 @@ class task_config:
     seed = -1
     sim_name = "base_sim"
     env_name = "procedural_forest"
-    robot_name = "lmf2"
+    robot_name = "base_quadrotor_with_camera"
     controller_name = "lmf2_velocity_control"
     args = {}
     num_envs = 4
