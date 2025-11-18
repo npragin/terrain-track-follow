@@ -10,7 +10,7 @@ class task_config:
     robot_name = "lmf2"
     controller_name = "lmf2_velocity_control"
     args = {}
-    num_envs = 1
+    num_envs = 4
     use_warp = True
     headless = True
     device = "cuda:0"

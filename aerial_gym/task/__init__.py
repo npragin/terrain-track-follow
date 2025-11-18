@@ -62,6 +62,16 @@ task_registry.register_task(
 
 task_registry.register_task("navigation_task", NavigationTask, navigation_task_config)
 
+# Register track_follow_task
+from aerial_gym.examples.track_follow.track_follow_task import TrackFollowTask
+from aerial_gym.config.task_config.track_follow_task_config import (
+    task_config as track_follow_task_config,
+)
+
+task_registry.register_task(
+    "track_follow_task", TrackFollowTask, track_follow_task_config
+)
+
 
 from aerial_gym.task.position_setpoint_task_reconfigurable.position_setpoint_task_reconfigurable import (
     PositionSetpointTaskReconfigurable,

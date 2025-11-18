@@ -1,22 +1,17 @@
-import numpy as np
+# isaacgym must be imported before torch
+import distutils
 import os
+
+import gym
+import isaacgym  # noqa: F401
+import numpy as np
+import torch
 import yaml
-
-
-import isaacgym
-
+from gym import spaces
+from rl_games.common import env_configurations, vecenv
 
 from aerial_gym.registry.task_registry import task_registry
 from aerial_gym.utils.helpers import parse_arguments
-
-import gym
-from gym import spaces
-from argparse import Namespace
-
-from rl_games.common import env_configurations, vecenv
-
-import torch
-import distutils
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 # import warnings
@@ -72,8 +67,8 @@ class AERIALRLGPUEnv(vecenv.IVecEnv):
             np.ones(self.env.task_config.action_space_dim),
         )
         info["observation_space"] = spaces.Box(
-            np.ones(self.env.task_config.observation_space_dim) * -np.Inf,
-            np.ones(self.env.task_config.observation_space_dim) * np.Inf,
+            np.ones(self.env.task_config.observation_space_dim) * -np.inf,
+            np.ones(self.env.task_config.observation_space_dim) * np.inf,
         )
         print(info["action_space"], info["observation_space"])
         return info
@@ -90,9 +85,7 @@ env_configurations.register(
 env_configurations.register(
     "position_setpoint_task_sim2real",
     {
-        "env_creator": lambda **kwargs: task_registry.make_task(
-            "position_setpoint_task_sim2real", **kwargs
-        ),
+        "env_creator": lambda **kwargs: task_registry.make_task("position_setpoint_task_sim2real", **kwargs),
         "vecenv_type": "AERIAL-RLGPU",
     },
 )
@@ -116,11 +109,17 @@ env_configurations.register(
 )
 
 env_configurations.register(
+    "track_follow_task",
+    {
+        "env_creator": lambda **kwargs: task_registry.make_task("track_follow_task", **kwargs),
+        "vecenv_type": "AERIAL-RLGPU",
+    },
+)
+
+env_configurations.register(
     "position_setpoint_task_reconfigurable",
     {
-        "env_creator": lambda **kwargs: task_registry.make_task(
-            "position_setpoint_task_reconfigurable", **kwargs
-        ),
+        "env_creator": lambda **kwargs: task_registry.make_task("position_setpoint_task_reconfigurable", **kwargs),
         "vecenv_type": "AERIAL-RLGPU",
     },
 )
@@ -128,9 +127,7 @@ env_configurations.register(
 env_configurations.register(
     "position_setpoint_task_morphy",
     {
-        "env_creator": lambda **kwargs: task_registry.make_task(
-            "position_setpoint_task_morphy", **kwargs
-        ),
+        "env_creator": lambda **kwargs: task_registry.make_task("position_setpoint_task_morphy", **kwargs),
         "vecenv_type": "AERIAL-RLGPU",
     },
 )
@@ -138,9 +135,7 @@ env_configurations.register(
 env_configurations.register(
     "position_setpoint_task_sim2real_end_to_end",
     {
-        "env_creator": lambda **kwargs: task_registry.make_task(
-            "position_setpoint_task_sim2real_end_to_end", **kwargs
-        ),
+        "env_creator": lambda **kwargs: task_registry.make_task("position_setpoint_task_sim2real_end_to_end", **kwargs),
         "vecenv_type": "AERIAL-RLGPU",
     },
 )
@@ -152,8 +147,6 @@ vecenv.register(
 
 
 def get_args():
-    from isaacgym import gymutil
-
     custom_parameters = [
         {
             "name": "--seed",
@@ -271,7 +264,6 @@ def get_args():
 
 
 def update_config(config, args):
-
     if args["task"] is not None:
         config["params"]["config"]["env_name"] = args["task"]
     if args["experiment_name"] is not None:
@@ -300,7 +292,7 @@ if __name__ == "__main__":
     config_name = args["file"]
 
     print("Loading config: ", config_name)
-    with open(config_name, "r") as stream:
+    with open(config_name) as stream:
         config = yaml.safe_load(stream)
 
         config = update_config(config, args)
