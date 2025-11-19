@@ -46,6 +46,18 @@ class TrackFollowTask(NavigationTask):
             (self.sim_env.num_envs, 4), device=self.device, requires_grad=False
         )
 
+        # Cache for target visibility flag (computed once per step)
+        self.cached_has_valid_bbox = torch.zeros(
+            (self.sim_env.num_envs,), device=self.device, dtype=torch.bool, requires_grad=False
+        )
+
+        # Grace period counter: tracks remaining frames of "target visible" rewards after losing visual contact
+        # Resets to grace_period_frames when target becomes visible again
+        # Initialized to zero (no grace period until target is first seen)
+        self.grace_period_counter = torch.zeros(
+            (self.sim_env.num_envs,), device=self.device, dtype=torch.int32, requires_grad=False
+        )
+
         # Get camera max_range from robot configuration
         robot_cfg = self.sim_env.robot_manager.robot.cfg
         self.camera_max_range = robot_cfg.sensor_config.camera_config.max_range
@@ -356,15 +368,13 @@ class TrackFollowTask(NavigationTask):
             visibility_reward: Tensor of rewards for target visibility
 
         """
-        # Check if target is visible: bbox is valid (not all zeros and has positive area)
-        has_valid_bbox = (
-            (self.cached_target_bbox[:, 2] > self.cached_target_bbox[:, 0]) &
-            (self.cached_target_bbox[:, 3] > self.cached_target_bbox[:, 1])
-        )  # [num_envs]
+        # Target is considered "visible" if actually visible OR still in grace period
+        # Uses cached has_valid_bbox computed once per step
+        target_visible_or_grace = self.cached_has_valid_bbox | (self.grace_period_counter > 0)
 
         # Reward for visible targets (only for non-terminated environments)
         visibility_reward = torch.where(
-            has_valid_bbox & ~crashes,  # Target visible AND not crashed
+            target_visible_or_grace & ~crashes,  # Target visible (or grace period) AND not crashed
             self.task_config.reward_parameters["target_visibility_reward"],
             torch.zeros((self.sim_env.num_envs,), device=self.device),
         )
@@ -419,18 +429,16 @@ class TrackFollowTask(NavigationTask):
             -(altitude_error * altitude_error) * self.task_config.reward_parameters["altitude_reward_exponent"]
         )
 
-        # Check if target is visible
-        has_valid_bbox = (
-            (self.cached_target_bbox[:, 2] > self.cached_target_bbox[:, 0]) &
-            (self.cached_target_bbox[:, 3] > self.cached_target_bbox[:, 1])
-        )
+        # Target is considered "visible" if actually visible OR still in grace period
+        # Uses cached has_valid_bbox computed once per step
+        target_visible_or_grace = self.cached_has_valid_bbox | (self.grace_period_counter > 0)
 
-        # Max out altitude reward when target visible (doesn't interfere with tracking)
+        # Max out altitude reward when target visible (or in grace period) (doesn't interfere with tracking)
         # Zero out reward when crashed (no reward for crashed environments)
         altitude_reward = torch.where(
             ~crashes,  # Not crashed
             torch.where(
-                has_valid_bbox,  # Target visible
+                target_visible_or_grace,  # Target visible or in grace period
                 self.task_config.reward_parameters["altitude_reward_magnitude"],  # Max reward
                 altitude_reward_value,  # Exponential reward based on altitude error
             ),
@@ -475,8 +483,12 @@ class TrackFollowTask(NavigationTask):
         # Update target_position from actual target object position
         self.update_target_position_from_asset()
 
-        # Clear cached bbox for reset environments (will be recomputed on next step)
+        # Clear cached bbox and visibility flag for reset environments (will be recomputed on next step)
         self.cached_target_bbox[env_ids] = 0.0
+        self.cached_has_valid_bbox[env_ids] = False
+
+        # Reset grace period counter for reset environments (start at zero for new episode)
+        self.grace_period_counter[env_ids] = 0
 
         # Log for debugging
         if len(env_ids) > 0 and len(env_ids) <= 4:  # Only log for small number of envs
@@ -511,6 +523,23 @@ class TrackFollowTask(NavigationTask):
             )
         else:
             self.cached_target_bbox[:] = 0.0
+
+        # Compute target visibility flag ONCE and cache it
+        self.cached_has_valid_bbox[:] = (
+            (self.cached_target_bbox[:, 2] > self.cached_target_bbox[:, 0]) &
+            (self.cached_target_bbox[:, 3] > self.cached_target_bbox[:, 1])
+        )
+
+        # Update grace period counter
+        grace_period_frames = self.task_config.reward_parameters["target_visibility_grace_period_frames"]
+
+        # Reset counter to grace_period_frames when target becomes visible
+        # Decrement counter when target not visible (but don't go below 0)
+        self.grace_period_counter[:] = torch.where(
+            self.cached_has_valid_bbox,
+            torch.full_like(self.grace_period_counter, grace_period_frames),
+            torch.clamp(self.grace_period_counter - 1, min=0),
+        )
 
         # Compute rewards (includes base rewards + visibility + altitude)
         self.rewards[:], self.terminations[:] = self.compute_rewards_and_crashes(self.obs_dict)
