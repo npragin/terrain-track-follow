@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from aerial_gym.utils.math import get_euler_xyz_tensor
+from aerial_gym.utils.math import get_euler_xyz_tensor, quat_rotate_inverse
 
 
 class TrackFollowTask(NavigationTask):
@@ -29,6 +29,49 @@ class TrackFollowTask(NavigationTask):
         self.vis_save_dir = script_dir / "segmentation_visualizations"
         os.makedirs(self.vis_save_dir, exist_ok=True)
         logger.info(f"Segmentation visualizations will be saved to: {self.vis_save_dir}/")
+
+        # Get target asset index from asset manager
+        self.target_asset_idx = None
+        if hasattr(self.sim_env, "asset_manager") and self.sim_env.asset_manager is not None:
+            self.target_asset_idx = self.sim_env.asset_manager.target_asset_idx
+            if self.target_asset_idx is not None:
+                logger.info(f"TrackFollowTask: Found target asset at index {self.target_asset_idx}")
+            else:
+                logger.warning("TrackFollowTask: Target asset not found in asset manager. Rewards will use random target_position.")
+        else:
+            logger.warning("TrackFollowTask: Asset manager not available. Rewards will use random target_position.")
+
+        # Target visibility reward parameter (can be overridden in config)
+        self.target_visibility_reward = torch.tensor(
+            getattr(task_config, "target_visibility_reward", 2.0), device=self.device
+        )
+
+        # Cache for target bounding box to avoid duplicate extraction per step
+        self.cached_target_bbox = torch.zeros(
+            (self.sim_env.num_envs, 4), device=self.device, requires_grad=False
+        )
+
+        # Add privileged observations to observation space and task_obs
+        # Privileged observations include vec_to_target (3D) and dist_to_target (1D) for the critic
+        if self.task_config.privileged_observation_space_dim > 0:
+            # Add privileged_obs to observation space
+            from gym.spaces import Box, Dict
+            # Update observation space to include privileged observations
+            obs_dict = dict(self.observation_space.spaces)
+            obs_dict["priviliged_obs"] = Box(
+                low=-np.inf,
+                high=np.inf,
+                shape=(self.task_config.privileged_observation_space_dim,),
+                dtype=np.float32,
+            )
+            self.observation_space = Dict(obs_dict)
+            # Add privileged_obs to task_obs dictionary
+            self.task_obs["priviliged_obs"] = torch.zeros(
+                (self.sim_env.num_envs, self.task_config.privileged_observation_space_dim),
+                device=self.device,
+                requires_grad=False,
+            )
+            logger.info(f"TrackFollowTask: Added privileged observations with dimension {self.task_config.privileged_observation_space_dim}")
 
     def extract_target_bbox_from_segmentation(self, segmentation_mask):
         """
@@ -286,16 +329,144 @@ class TrackFollowTask(NavigationTask):
                 f"Saved depth visualization to {depth_save_path} (range: [{depth_min_m:.2f}, {depth_max_m:.2f}] m)"
             )
 
-    def process_obs_for_task(self):
-        # Extract target bounding box from segmentation camera
+    def update_target_position_from_asset(self):
+        """
+        Update self.target_position from the actual target object position in the environment.
+        This ensures rewards are based on the actual target location, not a random position.
+        """
+        if self.target_asset_idx is not None and hasattr(self.sim_env, "asset_manager"):
+            asset_manager = self.sim_env.asset_manager
+            if asset_manager is not None and hasattr(asset_manager, "env_asset_state_tensor"):
+                # Get actual target position from asset state tensor
+                # env_asset_state_tensor shape: [num_envs, num_assets, 13]
+                # Position is at indices [0:3] (x, y, z)
+                actual_target_pos = asset_manager.env_asset_state_tensor[:, self.target_asset_idx, 0:3]
+                self.target_position[:] = actual_target_pos
+            else:
+                logger.warning("TrackFollowTask: Cannot access env_asset_state_tensor. Using previous target_position.")
+        # If target_asset_idx is None, target_position remains as set in reset_idx (from parent class)
+
+    def add_target_visibility_reward(self):
+        """
+        Add reward for keeping the target visible in the camera frame.
+        Rewards the agent when the target is detected in the segmentation mask (bbox != [0,0,0,0]).
+        A valid bbox has x_max > x_min and y_max > y_min, indicating the target occupies pixels in the image.
+        
+        Uses self.cached_target_bbox which is computed once per step in step() method.
+        """
+        # Check if target is visible: bbox is valid (not all zeros and has positive area)
+        # A valid bbox has x_max > x_min and y_max > y_min
+        # bbox format: [x_min, y_min, x_max, y_max]
+        has_valid_bbox = (
+            (self.cached_target_bbox[:, 2] > self.cached_target_bbox[:, 0]) & 
+            (self.cached_target_bbox[:, 3] > self.cached_target_bbox[:, 1])
+        )  # [num_envs]
+        
+        # Add reward for visible targets (only for non-terminated environments)
+        visibility_reward = torch.where(
+            has_valid_bbox & (self.terminations < 0),  # Target visible AND not terminated
+            self.target_visibility_reward * torch.ones_like(self.rewards),
+            torch.zeros_like(self.rewards),
+        )
+        
+        self.rewards[:] += visibility_reward
+
+    def reset_idx(self, env_ids):
+        """
+        Override reset_idx to set target_position from actual target object position
+        instead of random position based on environment bounds.
+        """
+        # Call parent reset_idx first to set up environment
+        # But we'll override the target_position afterwards
+        super().reset_idx(env_ids)
+        
+        # Update target_position from actual target object position
+        self.update_target_position_from_asset()
+        
+        # Clear cached bbox for reset environments (will be recomputed on next step)
+        self.cached_target_bbox[env_ids] = 0.0
+        
+        # Log for debugging
+        if len(env_ids) > 0 and len(env_ids) <= 4:  # Only log for small number of envs
+            env_ids_list = env_ids.cpu().numpy().tolist() if isinstance(env_ids, torch.Tensor) else env_ids
+            for env_id in env_ids_list:
+                logger.debug(
+                    f"TrackFollowTask: Reset env {env_id}, target_position = {self.target_position[env_id].cpu().numpy()}"
+                )
+
+    def step(self, actions):
+        """
+        Override step to update target_position from actual target object before computing rewards.
+        This handles cases where the target might move during the episode.
+        """
+        # Transform actions (same as parent)
+        transformed_action = self.action_transformation_function(actions)
+        logger.debug(f"raw_action: {actions[0]}, transformed action: {transformed_action[0]}")
+        
+        # Step the environment (this may update asset positions including target)
+        self.sim_env.step(actions=transformed_action)
+        
+        # Update target position from actual asset position AFTER sim_env.step()
+        # but BEFORE computing rewards. This ensures rewards are based on current target location.
+        self.update_target_position_from_asset()
+        
+        # Extract target bounding box ONCE and cache it for use in both rewards and observations
+        # This avoids duplicate extraction (was being done in both add_target_visibility_reward 
+        # and process_obs_for_task)
         if "segmentation_pixels" in self.obs_dict:
-            target_bbox = self.extract_target_bbox_from_segmentation(self.obs_dict["segmentation_pixels"])
-            # Replace vector to target (3D) + distance (1D) with bounding box (4D)
-            self.task_obs["observations"][:, 0:4] = target_bbox
+            self.cached_target_bbox[:] = self.extract_target_bbox_from_segmentation(
+                self.obs_dict["segmentation_pixels"]
+            )
         else:
-            # If segmentation not available, use zeros
-            logger.warning("segmentation_pixels not available, using zero bounding box")
-            self.task_obs["observations"][:, 0:4] = 0.0
+            self.cached_target_bbox[:] = 0.0
+        
+        # Now call the rest of the parent step logic (computes rewards, handles resets, etc.)
+        # We need to manually do the reward computation and other steps since we've already done sim_env.step()
+        self.rewards[:], self.terminations[:] = self.compute_rewards_and_crashes(self.obs_dict)
+
+        # Add reward for target visibility (keeping target in frame) - uses cached bbox
+        self.add_target_visibility_reward()
+
+        if self.task_config.return_state_before_reset == True:
+            return_tuple = self.get_return_tuple()
+
+        self.truncations[:] = torch.where(
+            self.sim_env.sim_steps > self.task_config.episode_len_steps,
+            torch.ones_like(self.truncations),
+            torch.zeros_like(self.truncations),
+        )
+
+        # successes are the sum of the environments which are to be truncated and have reached the target within a distance threshold
+        successes = self.truncations * (torch.norm(self.target_position - self.obs_dict["robot_position"], dim=1) < 1.0)
+        successes = torch.where(self.terminations > 0, torch.zeros_like(successes), successes)
+        timeouts = torch.where(self.truncations > 0, torch.logical_not(successes), torch.zeros_like(successes))
+        timeouts = torch.where(
+            self.terminations > 0, torch.zeros_like(timeouts), timeouts
+        )  # timeouts are not counted if there is a crash
+
+        self.infos["successes"] = successes
+        self.infos["timeouts"] = timeouts
+        self.infos["crashes"] = self.terminations
+
+        self.logging_sanity_check(self.infos)
+        self.check_and_update_curriculum_level(self.infos["successes"], self.infos["crashes"], self.infos["timeouts"])
+        # rendering happens at the post-reward calculation step since the newer measurement is required to be
+        # sent to the RL algorithm as an observation and it helps if the camera image is updated then
+        reset_envs = self.sim_env.post_reward_calculation_step()
+        if len(reset_envs) > 0:
+            self.reset_idx(reset_envs)
+        self.num_task_steps += 1
+        # do stuff with the image observations here
+        self.process_image_observation()
+        self.post_image_reward_addition()
+        if self.task_config.return_state_before_reset == False:
+            return_tuple = self.get_return_tuple()
+        return return_tuple
+
+    def process_obs_for_task(self):
+        # Use cached target bounding box (extracted once per step in step() method)
+        # This replaces vector to target (3D) + distance (1D) with bounding box (4D)
+        self.task_obs["observations"][:, 0:4] = self.cached_target_bbox
 
         euler_angles = ssa(get_euler_xyz_tensor(self.obs_dict["robot_vehicle_orientation"]))
         self.task_obs["observations"][:, 4:6] = euler_angles[:, 0:2]
@@ -305,8 +476,39 @@ class TrackFollowTask(NavigationTask):
         self.task_obs["observations"][:, 13:17] = self.obs_dict["robot_actions"]
         self.task_obs["observations"][:, 17:81] = self.image_latents
 
+        # Compute privileged observations for critic: vec_to_target (3D) and dist_to_target (1D)
+        if self.task_config.privileged_observation_space_dim > 0 and "priviliged_obs" in self.task_obs:
+            # Compute vector to target in vehicle frame (same as NavigationTask)
+            vec_to_tgt = quat_rotate_inverse(
+                self.obs_dict["robot_vehicle_orientation"],
+                (self.target_position - self.obs_dict["robot_position"]),
+            )
+            dist_to_tgt = torch.norm(vec_to_tgt, dim=-1)
+            
+            # Normalize vector to get unit direction (to keep values bounded)
+            # Add small epsilon to avoid division by zero
+            dist_to_tgt_safe = torch.clamp(dist_to_tgt, min=1e-6)
+            unit_vec_to_tgt = vec_to_tgt / dist_to_tgt_safe.unsqueeze(1)
+            
+            # Store in privileged observations: [unit_vec_x, unit_vec_y, unit_vec_z, distance]
+            self.task_obs["priviliged_obs"][:, 0:3] = unit_vec_to_tgt
+            self.task_obs["priviliged_obs"][:, 3] = dist_to_tgt / 5.0  # Normalize distance (divide by 5.0 like in NavigationTask)
+
         # Save segmentation visualization (only saves every N steps internally)
         # self.save_segmentation_visualization()
+        nan_mask = torch.isnan(self.task_obs["observations"])
+        inf_mask = torch.isinf(self.task_obs["observations"])
+        if torch.any(nan_mask) or torch.any(inf_mask):
+            logger.warning(f"Found NaN/Inf in observations. NaN count: {torch.sum(nan_mask)}, Inf count: {torch.sum(inf_mask)}")
+            self.task_obs["observations"][nan_mask | inf_mask] = 0.0
+        
+        # Check for NaN/Inf in privileged observations
+        if "priviliged_obs" in self.task_obs:
+            priv_nan_mask = torch.isnan(self.task_obs["priviliged_obs"])
+            priv_inf_mask = torch.isinf(self.task_obs["priviliged_obs"])
+            if torch.any(priv_nan_mask) or torch.any(priv_inf_mask):
+                logger.warning(f"Found NaN/Inf in privileged observations. NaN count: {torch.sum(priv_nan_mask)}, Inf count: {torch.sum(priv_inf_mask)}")
+                self.task_obs["priviliged_obs"][priv_nan_mask | priv_inf_mask] = 0.0
 
 
 @torch.jit.script

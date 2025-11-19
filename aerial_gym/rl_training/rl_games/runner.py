@@ -13,6 +13,10 @@ from rl_games.common import env_configurations, vecenv
 from aerial_gym.registry.task_registry import task_registry
 from aerial_gym.utils.helpers import parse_arguments
 
+# Register custom asymmetric actor-critic network
+from aerial_gym.rl_training.rl_games.asymmetric_actor_critic import register_asymmetric_network
+register_asymmetric_network()
+
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 # import warnings
 # warnings.filterwarnings("error")
@@ -21,10 +25,24 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 class ExtractObsWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
+        # Check if environment has privileged observations for asymmetric actor-critic
+        self.has_privileged_obs = hasattr(env, 'task_config') and \
+                                  env.task_config.privileged_observation_space_dim > 0
+        self.obs_dim = env.task_config.observation_space_dim if hasattr(env, 'task_config') else None
+        self.priv_dim = env.task_config.privileged_observation_space_dim if hasattr(env, 'task_config') else 0
 
     def reset(self, **kwargs):
         observations, *_ = super().reset(**kwargs)
-        return observations["observations"]
+        
+        # For asymmetric actor-critic with separate=True:
+        # Concatenate all observations and let the network split them internally
+        if self.has_privileged_obs and "priviliged_obs" in observations:
+            # Return full concatenated observations [81 + 4 = 85]
+            # Actor network will use [:81], critic network will use all 85
+            full_obs = torch.cat([observations["observations"], observations["priviliged_obs"]], dim=-1)
+            return full_obs
+        else:
+            return observations["observations"]
 
     def step(self, action):
         observations, rewards, terminated, truncated, infos = super().step(action)
@@ -35,12 +53,13 @@ class ExtractObsWrapper(gym.Wrapper):
             torch.zeros_like(terminated),
         )
 
-        return (
-            observations["observations"],
-            rewards,
-            dones,
-            infos,
-        )
+        # For asymmetric actor-critic with separate=True:
+        # Concatenate all observations and let the network split them internally
+        if self.has_privileged_obs and "priviliged_obs" in observations:
+            full_obs = torch.cat([observations["observations"], observations["priviliged_obs"]], dim=-1)
+            return (full_obs, rewards, dones, infos)
+        else:
+            return (observations["observations"], rewards, dones, infos)
 
 
 class AERIALRLGPUEnv(vecenv.IVecEnv):
@@ -66,11 +85,27 @@ class AERIALRLGPUEnv(vecenv.IVecEnv):
             -np.ones(self.env.task_config.action_space_dim),
             np.ones(self.env.task_config.action_space_dim),
         )
-        info["observation_space"] = spaces.Box(
-            np.ones(self.env.task_config.observation_space_dim) * -np.inf,
-            np.ones(self.env.task_config.observation_space_dim) * np.inf,
-        )
-        print(info["action_space"], info["observation_space"])
+        
+        # For asymmetric actor-critic: observation_space is the FULL concatenated size
+        # The custom network will split it internally (actor uses [:81], critic uses all 85)
+        if hasattr(self.env, 'task_config') and self.env.task_config.privileged_observation_space_dim > 0:
+            full_dim = self.env.task_config.observation_space_dim + \
+                      self.env.task_config.privileged_observation_space_dim
+            info["observation_space"] = spaces.Box(
+                np.ones(full_dim) * -np.inf,
+                np.ones(full_dim) * np.inf,
+            )
+            print(f"Action space: {info['action_space']}")
+            print(f"Observation space (full): {info['observation_space']}")
+            print(f"  → Actor will use first {self.env.task_config.observation_space_dim} dims")
+            print(f"  → Critic will use all {full_dim} dims (asymmetric)")
+        else:
+            info["observation_space"] = spaces.Box(
+                np.ones(self.env.task_config.observation_space_dim) * -np.inf,
+                np.ones(self.env.task_config.observation_space_dim) * np.inf,
+            )
+            print(info["action_space"], info["observation_space"])
+        
         return info
 
 

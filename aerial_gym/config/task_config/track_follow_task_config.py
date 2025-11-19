@@ -7,7 +7,7 @@ class task_config:
     seed = -1
     sim_name = "base_sim"
     env_name = "procedural_forest"
-    robot_name = "base_quadrotor_with_camera"
+    robot_name = "lmf2"
     controller_name = "lmf2_velocity_control"
     args = {}
     num_envs = 4
@@ -15,7 +15,9 @@ class task_config:
     headless = True
     device = "cuda:0"
     observation_space_dim = 13 + 4 + 64  # root_state + action_dim _+ latent_dims
-    privileged_observation_space_dim = 0
+    # privileged_observation_space_dim = 4  # vec_to_target (3D) + dist_to_target (1D) for privileged critic
+    privileged_observation_space_dim = 0  # vec_to_target (3D) + dist_to_target (1D) for privileged critic
+
     action_space_dim = 4
     episode_len_steps = 100  # real physics time for simulation is this value multiplied by sim.dt
 
@@ -25,12 +27,17 @@ class task_config:
     target_min_ratio = [0.90, 0.1, 0.1]  # target ratio w.r.t environment bounds in x,y,z
     target_max_ratio = [0.94, 0.90, 0.90]  # target ratio w.r.t environment bounds in x,y,z
 
+    # Reward for keeping target visible in camera frame (bbox != [0,0,0,0])
+    target_visibility_reward = 5.0
+
     reward_parameters = {
         "pos_reward_magnitude": 5.0,
         "pos_reward_exponent": 1.0 / 3.5,
         "very_close_to_goal_reward_magnitude": 5.0,
         "very_close_to_goal_reward_exponent": 2.0,
         "getting_closer_reward_multiplier": 10.0,
+        "yaw_alignment_reward_magnitude": 3.0,
+        "yaw_alignment_reward_exponent": 1.0,
         "x_action_diff_penalty_magnitude": 0.8,
         "x_action_diff_penalty_exponent": 3.333,
         "z_action_diff_penalty_magnitude": 0.8,
