@@ -10,7 +10,6 @@ from aerial_gym.utils.vae.vae_image_encoder import VAEImageEncoder
 
 logger = CustomLogger("navigation_task")
 
-
 def dict_to_class(dict):
     return type("ClassFromDict", (object,), dict)
 
@@ -397,7 +396,6 @@ def exponential_reward_function(magnitude: float, exponent: float, value: torch.
 def exponential_penalty_function(magnitude: float, exponent: float, value: torch.Tensor) -> torch.Tensor:
     """Exponential reward function"""
     return magnitude * (torch.exp(-(value * value) * exponent) - 1.0)
-
 
 @torch.jit.script
 def compute_reward(

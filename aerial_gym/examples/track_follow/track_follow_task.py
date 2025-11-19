@@ -46,6 +46,10 @@ class TrackFollowTask(NavigationTask):
             (self.sim_env.num_envs, 4), device=self.device, requires_grad=False
         )
 
+        # Get camera max_range from robot configuration
+        robot_cfg = self.sim_env.robot_manager.robot.cfg
+        self.camera_max_range = robot_cfg.sensor_config.camera_config.max_range
+
         # Add privileged observations to observation space and task_obs
         # Privileged observations include vec_to_target (3D) and dist_to_target (1D) for the critic
         if self.task_config.privileged_observation_space_dim > 0:
@@ -341,30 +345,123 @@ class TrackFollowTask(NavigationTask):
                 logger.warning("TrackFollowTask: Cannot access env_asset_state_tensor. Using previous target_position.")
         # If target_asset_idx is None, target_position remains as set in reset_idx (from parent class)
 
-    def add_target_visibility_reward(self):
+    def compute_target_visibility_reward(self, crashes):
         """
-        Add reward for keeping the target visible in the camera frame.
-        Rewards the agent when the target is detected in the segmentation mask (bbox != [0,0,0,0]).
-        A valid bbox has x_max > x_min and y_max > y_min, indicating the target occupies pixels in the image.
+        Compute reward for keeping the target visible in the camera frame.
         
-        Uses self.cached_target_bbox which is computed once per step in step() method.
+        Args:
+            crashes: Tensor indicating which environments have crashed
+            
+        Returns:
+            visibility_reward: Tensor of rewards for target visibility
+
         """
         # Check if target is visible: bbox is valid (not all zeros and has positive area)
-        # A valid bbox has x_max > x_min and y_max > y_min
-        # bbox format: [x_min, y_min, x_max, y_max]
         has_valid_bbox = (
-            (self.cached_target_bbox[:, 2] > self.cached_target_bbox[:, 0]) & 
+            (self.cached_target_bbox[:, 2] > self.cached_target_bbox[:, 0]) &
             (self.cached_target_bbox[:, 3] > self.cached_target_bbox[:, 1])
         )  # [num_envs]
-        
-        # Add reward for visible targets (only for non-terminated environments)
+
+        # Reward for visible targets (only for non-terminated environments)
         visibility_reward = torch.where(
-            has_valid_bbox & (self.terminations < 0),  # Target visible AND not terminated
-            self.task_config.reward_parameters["target_visibility_reward"] * torch.ones_like(self.rewards),
-            torch.zeros_like(self.rewards),
+            has_valid_bbox & ~crashes,  # Target visible AND not crashed
+            self.task_config.reward_parameters["target_visibility_reward"],
+            torch.zeros((self.sim_env.num_envs,), device=self.device),
         )
+
+        return visibility_reward
+
+    def compute_altitude_reward(self, obs_dict, crashes):
+        """
+        Compute reward for maintaining optimal altitude above terrain.
         
-        self.rewards[:] += visibility_reward
+        When target is NOT visible:
+            - Incentivizes flying at desired_altitude (80% of max camera range) above terrain
+            - Uses exponential reward that decays with distance from desired altitude
+        
+        When target IS visible:
+            - Maxes out the reward so altitude doesn't interfere with target tracking
+        
+        Args:
+            obs_dict: Dictionary containing robot observations
+            crashes: Tensor indicating which environments have crashed
+            
+        Returns:
+            altitude_reward: Tensor of rewards for altitude maintenance
+
+        """
+        terrain_gen = self.sim_env.shared_terrain_generator
+        robot_positions = obs_dict["robot_position"]  # [num_envs, 3]
+
+        # Get cached heightmap
+        heightmap = terrain_gen.generate_heightmap(use_cache=True)
+
+        # Sample terrain height for each drone's XY position
+        terrain_heights = torch.zeros(self.sim_env.num_envs, device=self.device)
+        for env_id in range(self.sim_env.num_envs):
+            x = robot_positions[env_id, 0].item()
+            y = robot_positions[env_id, 1].item()
+            terrain_height = terrain_gen.sample_height(x, y, heightmap)
+            terrain_heights[env_id] = terrain_height
+
+        # Calculate altitude above terrain
+        terrain_offset = terrain_gen.amplitude / 2.0
+        altitude_above_terrain = robot_positions[:, 2] - (terrain_heights + terrain_offset)
+
+        # Desired altitude based on camera max range
+        desired_altitude = self.task_config.reward_parameters["desired_altitude_ratio"] * self.camera_max_range
+
+        # Calculate altitude error
+        altitude_error = torch.abs(altitude_above_terrain - desired_altitude)
+
+        # Compute exponential reward based on altitude error
+        altitude_reward_value = self.task_config.reward_parameters["altitude_reward_magnitude"] * torch.exp(
+            -(altitude_error * altitude_error) * self.task_config.reward_parameters["altitude_reward_exponent"]
+        )
+
+        # Check if target is visible
+        has_valid_bbox = (
+            (self.cached_target_bbox[:, 2] > self.cached_target_bbox[:, 0]) &
+            (self.cached_target_bbox[:, 3] > self.cached_target_bbox[:, 1])
+        )
+
+        # Max out altitude reward when target visible (doesn't interfere with tracking)
+        # Zero out reward when crashed (no reward for crashed environments)
+        altitude_reward = torch.where(
+            ~crashes,  # Not crashed
+            torch.where(
+                has_valid_bbox,  # Target visible
+                self.task_config.reward_parameters["altitude_reward_magnitude"],  # Max reward
+                altitude_reward_value,  # Exponential reward based on altitude error
+            ),
+            torch.zeros((self.sim_env.num_envs,), device=self.device),  # Zero reward if crashed
+        )
+
+        return altitude_reward
+
+    def compute_track_follow_rewards(self, obs_dict, crashes):
+        """
+        Compute additional rewards for track follow task.
+        """
+        visibility_reward = self.compute_target_visibility_reward(crashes)
+        altitude_reward = self.compute_altitude_reward(obs_dict, crashes)
+        return visibility_reward + altitude_reward
+
+    def compute_rewards_and_crashes(self, obs_dict):
+        """
+        Override parent method to add target visibility and altitude rewards.
+        Computes base rewards from parent, then adds track-follow specific rewards.
+        """
+        # Get base rewards from parent class (distance, yaw, action penalties, etc.)
+        base_rewards, crashes = super().compute_rewards_and_crashes(obs_dict)
+
+        # Compute individual reward components
+        track_follow_rewards = self.compute_track_follow_rewards(obs_dict, crashes)
+
+        # Combine all rewards
+        total_rewards = base_rewards + track_follow_rewards
+
+        return total_rewards, crashes
 
     def reset_idx(self, env_ids):
         """
@@ -374,13 +471,13 @@ class TrackFollowTask(NavigationTask):
         # Call parent reset_idx first to set up environment
         # But we'll override the target_position afterwards
         super().reset_idx(env_ids)
-        
+
         # Update target_position from actual target object position
         self.update_target_position_from_asset()
-        
+
         # Clear cached bbox for reset environments (will be recomputed on next step)
         self.cached_target_bbox[env_ids] = 0.0
-        
+
         # Log for debugging
         if len(env_ids) > 0 and len(env_ids) <= 4:  # Only log for small number of envs
             env_ids_list = env_ids.cpu().numpy().tolist() if isinstance(env_ids, torch.Tensor) else env_ids
@@ -397,16 +494,16 @@ class TrackFollowTask(NavigationTask):
         # Transform actions (same as parent)
         transformed_action = self.action_transformation_function(actions)
         logger.debug(f"raw_action: {actions[0]}, transformed action: {transformed_action[0]}")
-        
+
         # Step the environment (this may update asset positions including target)
         self.sim_env.step(actions=transformed_action)
-        
+
         # Update target position from actual asset position AFTER sim_env.step()
         # but BEFORE computing rewards. This ensures rewards are based on current target location.
         self.update_target_position_from_asset()
-        
+
         # Extract target bounding box ONCE and cache it for use in both rewards and observations
-        # This avoids duplicate extraction (was being done in both add_target_visibility_reward 
+        # This avoids duplicate extraction (was being done in both add_target_visibility_reward
         # and process_obs_for_task)
         if "segmentation_pixels" in self.obs_dict:
             self.cached_target_bbox[:] = self.extract_target_bbox_from_segmentation(
@@ -414,13 +511,9 @@ class TrackFollowTask(NavigationTask):
             )
         else:
             self.cached_target_bbox[:] = 0.0
-        
-        # Now call the rest of the parent step logic (computes rewards, handles resets, etc.)
-        # We need to manually do the reward computation and other steps since we've already done sim_env.step()
-        self.rewards[:], self.terminations[:] = self.compute_rewards_and_crashes(self.obs_dict)
 
-        # Add reward for target visibility (keeping target in frame) - uses cached bbox
-        self.add_target_visibility_reward()
+        # Compute rewards (includes base rewards + visibility + altitude)
+        self.rewards[:], self.terminations[:] = self.compute_rewards_and_crashes(self.obs_dict)
 
         if self.task_config.return_state_before_reset == True:
             return_tuple = self.get_return_tuple()
@@ -479,12 +572,12 @@ class TrackFollowTask(NavigationTask):
                 (self.target_position - self.obs_dict["robot_position"]),
             )
             dist_to_tgt = torch.norm(vec_to_tgt, dim=-1)
-            
+
             # Normalize vector to get unit direction (to keep values bounded)
             # Add small epsilon to avoid division by zero
             dist_to_tgt_safe = torch.clamp(dist_to_tgt, min=1e-6)
             unit_vec_to_tgt = vec_to_tgt / dist_to_tgt_safe.unsqueeze(1)
-            
+
             # Store in privileged observations: [unit_vec_x, unit_vec_y, unit_vec_z, distance]
             self.task_obs["priviliged_obs"][:, 0:3] = unit_vec_to_tgt
             self.task_obs["priviliged_obs"][:, 3] = dist_to_tgt / 5.0  # Normalize distance (divide by 5.0 like in NavigationTask)
@@ -496,7 +589,7 @@ class TrackFollowTask(NavigationTask):
         if torch.any(nan_mask) or torch.any(inf_mask):
             logger.warning(f"Found NaN/Inf in observations. NaN count: {torch.sum(nan_mask)}, Inf count: {torch.sum(inf_mask)}")
             self.task_obs["observations"][nan_mask | inf_mask] = 0.0
-        
+
         # Check for NaN/Inf in privileged observations
         if "priviliged_obs" in self.task_obs:
             priv_nan_mask = torch.isnan(self.task_obs["priviliged_obs"])

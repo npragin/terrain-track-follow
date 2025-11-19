@@ -49,6 +49,11 @@ class task_config:
         "yawrate_absolute_action_penalty_magnitude": 1.5,
         "yawrate_absolute_action_penalty_exponent": 2.0,
         "collision_penalty": -100.0,
+
+        # Altitude reward: incentivize flying at optimal height when searching for target
+        "altitude_reward_magnitude": 8.0,
+        "altitude_reward_exponent": 0.05,
+        "desired_altitude_ratio": 0.8,
     }
 
     class vae_config:
