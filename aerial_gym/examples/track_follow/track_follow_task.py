@@ -41,11 +41,6 @@ class TrackFollowTask(NavigationTask):
         else:
             logger.warning("TrackFollowTask: Asset manager not available. Rewards will use random target_position.")
 
-        # Target visibility reward parameter (can be overridden in config)
-        self.target_visibility_reward = torch.tensor(
-            getattr(task_config, "target_visibility_reward", 2.0), device=self.device
-        )
-
         # Cache for target bounding box to avoid duplicate extraction per step
         self.cached_target_bbox = torch.zeros(
             (self.sim_env.num_envs, 4), device=self.device, requires_grad=False
@@ -365,7 +360,7 @@ class TrackFollowTask(NavigationTask):
         # Add reward for visible targets (only for non-terminated environments)
         visibility_reward = torch.where(
             has_valid_bbox & (self.terminations < 0),  # Target visible AND not terminated
-            self.target_visibility_reward * torch.ones_like(self.rewards),
+            self.task_config.reward_parameters["target_visibility_reward"] * torch.ones_like(self.rewards),
             torch.zeros_like(self.rewards),
         )
         

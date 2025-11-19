@@ -27,9 +27,6 @@ class task_config:
     target_min_ratio = [0.90, 0.1, 0.1]  # target ratio w.r.t environment bounds in x,y,z
     target_max_ratio = [0.94, 0.90, 0.90]  # target ratio w.r.t environment bounds in x,y,z
 
-    # Reward for keeping target visible in camera frame (bbox != [0,0,0,0])
-    target_visibility_reward = 5.0
-
     reward_parameters = {
         "pos_reward_magnitude": 5.0,
         "pos_reward_exponent": 1.0 / 3.5,
@@ -44,6 +41,7 @@ class task_config:
         "z_action_diff_penalty_exponent": 5.0,
         "yawrate_action_diff_penalty_magnitude": 0.8,
         "yawrate_action_diff_penalty_exponent": 3.33,
+        "target_visibility_reward": 5.0,
         "x_absolute_action_penalty_magnitude": 0.1,
         "x_absolute_action_penalty_exponent": 0.3,
         "z_absolute_action_penalty_magnitude": 1.5,
