@@ -10,7 +10,7 @@ class task_config:
     robot_name = "base_quadrotor_with_camera"
     controller_name = "lmf2_velocity_control"
     args = {}
-    num_envs = 4
+    num_envs = 16
     use_warp = True
     headless = True
     device = "cuda:0"
@@ -26,24 +26,24 @@ class task_config:
     target_max_ratio = [0.94, 0.90, 0.90]  # target ratio w.r.t environment bounds in x,y,z
 
     reward_parameters = {
-        "pos_reward_magnitude": 5.0,
+        "pos_reward_magnitude": 0.0,  # Disabled - using dense target visibility reward instead
         "pos_reward_exponent": 1.0 / 3.5,
-        "very_close_to_goal_reward_magnitude": 5.0,
+        "very_close_to_goal_reward_magnitude": 0.0,  # Disabled
         "very_close_to_goal_reward_exponent": 2.0,
-        "getting_closer_reward_multiplier": 10.0,
-        "x_action_diff_penalty_magnitude": 0.8,
+        "getting_closer_reward_multiplier": 0.0,  # Disabled
+        "x_action_diff_penalty_magnitude": 0.0,  # Disabled - simplified for easy training
         "x_action_diff_penalty_exponent": 3.333,
-        "z_action_diff_penalty_magnitude": 0.8,
+        "z_action_diff_penalty_magnitude": 0.0,  # Disabled
         "z_action_diff_penalty_exponent": 5.0,
-        "yawrate_action_diff_penalty_magnitude": 0.8,
+        "yawrate_action_diff_penalty_magnitude": 0.0,  # Disabled
         "yawrate_action_diff_penalty_exponent": 3.33,
-        "x_absolute_action_penalty_magnitude": 0.1,
+        "x_absolute_action_penalty_magnitude": 0.0,  # Disabled
         "x_absolute_action_penalty_exponent": 0.3,
-        "z_absolute_action_penalty_magnitude": 1.5,
+        "z_absolute_action_penalty_magnitude": 0.0,  # Disabled
         "z_absolute_action_penalty_exponent": 1.0,
-        "yawrate_absolute_action_penalty_magnitude": 1.5,
+        "yawrate_absolute_action_penalty_magnitude": 0.0,  # Disabled
         "yawrate_absolute_action_penalty_exponent": 2.0,
-        "collision_penalty": -100.0,
+        "collision_penalty": -100.0,  # Keep collision penalty for safety
     }
 
     class vae_config:

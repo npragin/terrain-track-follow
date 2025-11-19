@@ -286,6 +286,17 @@ class TrackFollowTask(NavigationTask):
                 f"Saved depth visualization to {depth_save_path} (range: [{depth_min_m:.2f}, {depth_max_m:.2f}] m)"
             )
 
+    def post_image_reward_addition(self):
+        """
+        Override to provide dense reward: 1 if target is seen, 0 if not.
+        This replaces the depth-based reward with a simple binary reward based on target visibility.
+        """
+        seg_mask = self.obs_dict["segmentation_pixels"][:, 0, :, :]  # [num_envs, height, width]
+        target_mask = seg_mask == TARGET_SEMANTIC_ID  # [num_envs, height, width]
+        target_seen = torch.any(target_mask.view(seg_mask.shape[0], -1), dim=1)  # [num_envs]
+        target_reward = target_seen.float()  # [num_envs]
+        self.rewards[self.terminations < 0] += target_reward[self.terminations < 0]
+
     def process_obs_for_task(self):
         # Extract target bounding box from segmentation camera
         if "segmentation_pixels" in self.obs_dict:
