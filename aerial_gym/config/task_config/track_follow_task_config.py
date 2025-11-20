@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 import torch
 
 from aerial_gym import AERIAL_GYM_DIRECTORY
@@ -19,48 +21,48 @@ class task_config:
     privileged_observation_space_dim = 0  # vec_to_target (3D) + dist_to_target (1D) for privileged critic
 
     action_space_dim = 4
-    episode_len_steps = 100  # real physics time for simulation is this value multiplied by sim.dt
+    episode_len_steps = 1800  # real physics time for simulation is this value multiplied by sim.dt
 
     return_state_before_reset = False  # False as usually state is returned for next episode after reset
     # user can set the above to true if they so desire
 
-    target_min_ratio = [0.90, 0.1, 0.1]  # target ratio w.r.t environment bounds in x,y,z
-    target_max_ratio = [0.94, 0.90, 0.90]  # target ratio w.r.t environment bounds in x,y,z
+    target_min_ratio = [0.1, 0.1, 0.1]  # target ratio w.r.t environment bounds in x,y,z
+    target_max_ratio = [0.9, 0.9, 0.9]  # target ratio w.r.t environment bounds in x,y,z
 
     # Minimum number of pixels that must be on the target for the bounding box to register
-    min_pixels_on_target = 1
+    min_pixels_on_target = 30
 
-    reward_parameters = {
-        "pos_reward_magnitude": 5.0,
-        "pos_reward_exponent": 1.0 / 3.5,
-        "very_close_to_goal_reward_magnitude": 5.0,
-        "very_close_to_goal_reward_exponent": 2.0,
-        "getting_closer_reward_multiplier": 10.0,
-        "yaw_alignment_reward_magnitude": 3.0,
-        "yaw_alignment_reward_exponent": 1.0,
+    reward_parameters: ClassVar[dict[str, float]] = {
+        # Use during both phases
         "x_action_diff_penalty_magnitude": 0.8,
         "x_action_diff_penalty_exponent": 3.333,
         "z_action_diff_penalty_magnitude": 0.8,
         "z_action_diff_penalty_exponent": 5.0,
         "yawrate_action_diff_penalty_magnitude": 0.8,
         "yawrate_action_diff_penalty_exponent": 3.33,
-        "target_visibility_reward": 5.0,
-        "x_absolute_action_penalty_magnitude": 0.1,
-        "x_absolute_action_penalty_exponent": 0.3,
-        "z_absolute_action_penalty_magnitude": 1.5,
-        "z_absolute_action_penalty_exponent": 1.0,
-        "yawrate_absolute_action_penalty_magnitude": 1.5,
-        "yawrate_absolute_action_penalty_exponent": 2.0,
         "collision_penalty": -100.0,
-        # Altitude reward: incentivize flying at optimal height when searching for target
+        "target_visibility_reward": 5.0,
+        "target_visibility_grace_period_frames": 50,  # NOTE: This depends on dt
+        # Use during search phase
         "altitude_reward_magnitude": 6.0,
         "altitude_reward_exponent": 0.05,
         "desired_altitude_ratio": 0.8,
-        # Grace period: number of frames to maintain "target visible" rewards after losing visual contact
-        # Default: 30 frames = 0.3 seconds (at dt=0.01s per frame)
-        "target_visibility_grace_period_frames": 200,
-        # Exploration reward: incentivize exploring entire region when target not visible
-        "exploration_reward_magnitude": 2.0,  # Max reward when all cells visited
+        "exploration_reward_magnitude": 2.0,
+        # Use during track phase
+        "yaw_alignment_reward_magnitude": 1.0,
+        "yaw_alignment_reward_exponent": 1.0,
+        # Don't use
+        "pos_reward_magnitude": 0.0,
+        "pos_reward_exponent": 0.0,
+        "very_close_to_goal_reward_magnitude": 0.0,
+        "very_close_to_goal_reward_exponent": 0.0,
+        "getting_closer_reward_multiplier": 0.0,
+        "x_absolute_action_penalty_magnitude": 0.0,
+        "x_absolute_action_penalty_exponent": 0.0,
+        "z_absolute_action_penalty_magnitude": 0.0,
+        "z_absolute_action_penalty_exponent": 0.0,
+        "yawrate_absolute_action_penalty_magnitude": 0.0,
+        "yawrate_absolute_action_penalty_exponent": 0.0,
     }
 
     class vae_config:
@@ -106,7 +108,7 @@ class task_config:
 
     def action_transformation_function(action):
         clamped_action = torch.clamp(action, -1.0, 1.0)
-        max_speed = 2.0  # [m/s]
+        max_speed = 10.0  # [m/s]
         max_yawrate = torch.pi / 3  # [rad/s]
 
         # clamped_action[:, 0:3] = max_speed * clamped_action[:, 0:3]

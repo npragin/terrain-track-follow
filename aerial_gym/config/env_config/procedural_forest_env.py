@@ -31,18 +31,18 @@ class ProceduralForestEnvCfg:
 
         # Environment bounds [x_min, y_min, z_min] to [x_max, y_max, z_max] in meters
         # Terrain starts at z=0 and extends up to terrain_amplitude
-        lower_bound_min = [-50.0, -50.0, 0.0]
-        lower_bound_max = [-50.0, -50.0, 0.0]
-        upper_bound_min = [50.0, 50.0, 30.0]
-        upper_bound_max = [50.0, 50.0, 30.0]
+        lower_bound_min = [-10.0, -10.0, 0.0]
+        lower_bound_max = [-10.0, -10.0, 0.0]
+        upper_bound_min = [10.0, 10.0, 10.0]
+        upper_bound_max = [10.0, 10.0, 10.0]
 
         # Tree density: trees per square meter (num_assets = tree_density * env_area)
-        tree_density = 0.01  # 100 trees per 100m × 100m environment
+        tree_density = 0.02
 
         # Terrain generation configuration (Simplex noise)
         enable_terrain = True
         terrain_resolution = 256
-        terrain_amplitude = 24.0  # Total height range (terrain offset to start at z=0)
+        terrain_amplitude = 0.1  # Total height range (terrain offset to start at z=0)
         terrain_frequency = 0.3  # Base frequency (lower=smooth, higher=rough)
         terrain_octaves = 8  # Number of noise layers
         terrain_lacunarity = 2.0  # Frequency multiplier per octave
@@ -55,7 +55,7 @@ class ProceduralForestEnvCfg:
         # Target movement configuration
         target_velocity_change_interval = 100  # Steps between velocity changes
         target_stop_probability = 0.15  # Chance to stop moving per interval
-        target_velocity_max = 1.0  # Maximum velocity magnitude in m/s
+        target_velocity_max = 1.5  # Maximum velocity magnitude in m/s
         target_velocity_min = 0.3  # Minimum velocity when moving in m/s
 
     class env_config:

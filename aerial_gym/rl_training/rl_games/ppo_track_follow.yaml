@@ -45,7 +45,7 @@ params:
       scale_value: 0.1
 
     normalize_advantage: True
-    gamma: 0.98
+    gamma: 0.99
     tau: 0.95
     ppo: True
     learning_rate: 1e-4
@@ -54,11 +54,11 @@ params:
     save_best_after: 10
     score_to_win: 100000
     grad_norm: 1.0
-    entropy_coef: 0
+    entropy_coef: 0.0001
     truncate_grads: True
     e_clip: 0.2
     clip_value: False
-    num_actors: 16
+    num_actors: 4096
     horizon_length: 32
     minibatch_size: 256
     mini_epochs: 4
@@ -76,4 +76,3 @@ params:
       render: True
       deterministic: True
       games_num: 100000
-
