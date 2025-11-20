@@ -1,5 +1,4 @@
 from aerial_gym.config.sensor_config.base_sensor_config import BaseSensorConfig
-import numpy as np
 
 
 class BaseDepthCameraConfig(BaseSensorConfig):
@@ -23,10 +22,10 @@ class BaseDepthCameraConfig(BaseSensorConfig):
     # You can combine: (depth+segmentation), (range+segmentation), (pointcloud+segmentation)
     # Other combinations are trivial and you can add support for them in the code if you want.
 
-    calculate_depth = (
-        True  # Get a depth image and not a range image. False will result in a range image
+    calculate_depth = True  # Get a depth image and not a range image. False will result in a range image
+    return_pointcloud = (
+        False  # Return a pointcloud instead of an image. Above depth option will be ignored if this is set to True
     )
-    return_pointcloud = False  # Return a pointcloud instead of an image. Above depth option will be ignored if this is set to True
     pointcloud_in_world_frame = False
     segmentation_camera = True
 
@@ -38,9 +37,7 @@ class BaseDepthCameraConfig(BaseSensorConfig):
 
     # do not change this.
     normalize_range = (
-        False
-        if (return_pointcloud == True and pointcloud_in_world_frame == True)
-        else normalize_range
+        False if (return_pointcloud == True and pointcloud_in_world_frame == True) else normalize_range
     )  # divide by max_range. Ignored when pointcloud is in world frame
 
     # what to do with out of range values
@@ -52,11 +49,11 @@ class BaseDepthCameraConfig(BaseSensorConfig):
     )  # Will be [-1]U[0,1] if normalize_range is True, otherwise will be value set by user in place of -1.0
 
     # randomize placement of the sensor
-    randomize_placement = True
+    randomize_placement = False
     min_translation = [0.07, -0.06, 0.01]
     max_translation = [0.12, 0.03, 0.04]
-    min_euler_rotation_deg = [-5.0, -5.0, -5.0]
-    max_euler_rotation_deg = [5.0, 5.0, 5.0]
+    min_euler_rotation_deg = [0.0, -45.0, 0.0]
+    max_euler_rotation_deg = [0.0, -45.0, 0.0]
 
     # nominal position and orientation (only for Isaac Gym Camera Sensors)
     # If you choose to use Isaac Gym sensors, their position and orientation will NOT be randomized
