@@ -27,6 +27,9 @@ class task_config:
     target_min_ratio = [0.90, 0.1, 0.1]  # target ratio w.r.t environment bounds in x,y,z
     target_max_ratio = [0.94, 0.90, 0.90]  # target ratio w.r.t environment bounds in x,y,z
 
+    # Minimum number of pixels that must be on the target for the bounding box to register
+    min_pixels_on_target = 1
+
     reward_parameters = {
         "pos_reward_magnitude": 5.0,
         "pos_reward_exponent": 1.0 / 3.5,
@@ -49,16 +52,13 @@ class task_config:
         "yawrate_absolute_action_penalty_magnitude": 1.5,
         "yawrate_absolute_action_penalty_exponent": 2.0,
         "collision_penalty": -100.0,
-
         # Altitude reward: incentivize flying at optimal height when searching for target
         "altitude_reward_magnitude": 6.0,
         "altitude_reward_exponent": 0.05,
         "desired_altitude_ratio": 0.8,
-        
         # Grace period: number of frames to maintain "target visible" rewards after losing visual contact
         # Default: 30 frames = 0.3 seconds (at dt=0.01s per frame)
         "target_visibility_grace_period_frames": 200,
-        
         # Exploration reward: incentivize exploring entire region when target not visible
         "exploration_reward_magnitude": 2.0,  # Max reward when all cells visited
     }

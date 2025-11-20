@@ -37,14 +37,14 @@ class TrackFollowTask(NavigationTask):
             if self.target_asset_idx is not None:
                 logger.info(f"TrackFollowTask: Found target asset at index {self.target_asset_idx}")
             else:
-                logger.warning("TrackFollowTask: Target asset not found in asset manager. Rewards will use random target_position.")
+                logger.warning(
+                    "TrackFollowTask: Target asset not found in asset manager. Rewards will use random target_position."
+                )
         else:
             logger.warning("TrackFollowTask: Asset manager not available. Rewards will use random target_position.")
 
         # Cache for target bounding box to avoid duplicate extraction per step
-        self.cached_target_bbox = torch.zeros(
-            (self.sim_env.num_envs, 4), device=self.device, requires_grad=False
-        )
+        self.cached_target_bbox = torch.zeros((self.sim_env.num_envs, 4), device=self.device, requires_grad=False)
 
         # Cache for target visibility flag (computed once per step)
         self.cached_has_valid_bbox = torch.zeros(
@@ -62,27 +62,27 @@ class TrackFollowTask(NavigationTask):
         robot_cfg = self.sim_env.robot_manager.robot.cfg
         self.camera_max_range = robot_cfg.sensor_config.camera_config.max_range
         self.camera_horizontal_fov_deg = robot_cfg.sensor_config.camera_config.horizontal_fov_deg
-        
+
         # Calculate exploration grid cell size based on camera FOV and target altitude
         # Assumes camera facing directly downward on flat ground
         desired_altitude = self.task_config.reward_parameters["desired_altitude_ratio"] * self.camera_max_range
         horizontal_fov_rad = np.deg2rad(self.camera_horizontal_fov_deg)
         # Coverage at target altitude: 2 * altitude * tan(FOV/2)
         grid_cell_size = 2.0 * desired_altitude * np.tan(horizontal_fov_rad / 2.0)
-        
+
         # Get environment bounds (XY plane)
         env_bounds_min = self.obs_dict["env_bounds_min"][0, 0:2].cpu().numpy()  # [x_min, y_min]
         env_bounds_max = self.obs_dict["env_bounds_max"][0, 0:2].cpu().numpy()  # [x_max, y_max]
         env_size_x = float(env_bounds_max[0] - env_bounds_min[0])
         env_size_y = float(env_bounds_max[1] - env_bounds_min[1])
-        
+
         # Calculate grid dimensions (round up to nearest integer)
         self.exploration_grid_size_x = int(np.ceil(env_size_x / grid_cell_size.item()))
         self.exploration_grid_size_y = int(np.ceil(env_size_y / grid_cell_size.item()))
         self.exploration_total_cells = self.exploration_grid_size_x * self.exploration_grid_size_y
         self.exploration_grid_cell_size = grid_cell_size
         self.exploration_env_bounds_min = torch.tensor(env_bounds_min, device=self.device, dtype=torch.float32)
-        
+
         # Storage for visited cells: [num_envs, grid_size_x, grid_size_y] boolean tensor
         self.exploration_visited_grid = torch.zeros(
             (self.sim_env.num_envs, self.exploration_grid_size_x, self.exploration_grid_size_y),
@@ -90,7 +90,7 @@ class TrackFollowTask(NavigationTask):
             dtype=torch.bool,
             requires_grad=False,
         )
-        
+
         logger.info(
             f"Exploration grid: {self.exploration_grid_size_x}x{self.exploration_grid_size_y} = {self.exploration_total_cells} cells, "
             f"cell_size={grid_cell_size:.2f}m (based on FOV={self.camera_horizontal_fov_deg:.1f}°, altitude={desired_altitude:.2f}m)"
@@ -101,6 +101,7 @@ class TrackFollowTask(NavigationTask):
         if self.task_config.privileged_observation_space_dim > 0:
             # Add privileged_obs to observation space
             from gym.spaces import Box, Dict
+
             # Update observation space to include privileged observations
             obs_dict = dict(self.observation_space.spaces)
             obs_dict["priviliged_obs"] = Box(
@@ -116,18 +117,24 @@ class TrackFollowTask(NavigationTask):
                 device=self.device,
                 requires_grad=False,
             )
-            logger.info(f"TrackFollowTask: Added privileged observations with dimension {self.task_config.privileged_observation_space_dim}")
+            logger.info(
+                f"TrackFollowTask: Added privileged observations with dimension {self.task_config.privileged_observation_space_dim}"
+            )
 
     def extract_target_bbox_from_segmentation(self, segmentation_mask):
         """
         Extract 2D bounding box of TARGET_SEMANTIC_ID from segmentation mask. Uses vectorized operations for efficiency.
+
+        The bounding box is only registered if the number of target pixels is at least
+        min_pixels_on_target (configured in task_config). This helps filter out noise
+        and ensures only substantial target detections are used.
 
         Args:
             segmentation_mask: Tensor of shape [num_envs, num_sensors, height, width] with dtype int32
 
         Returns:
             bbox: Tensor of shape [num_envs, 4] with [x_min, y_min, x_max, y_max] normalized to [0, 1]
-                  If target not found, returns [0, 0, 0, 0]
+                  If target not found or has insufficient pixels, returns [0, 0, 0, 0]
 
         """
         num_envs = segmentation_mask.shape[0]
@@ -141,10 +148,14 @@ class TrackFollowTask(NavigationTask):
             # Create binary mask for target (TARGET_SEMANTIC_ID = 15)
             target_mask = seg_mask == TARGET_SEMANTIC_ID  # [num_envs, height, width]
 
-            # Check if target exists in each environment
-            target_found = torch.any(target_mask.view(num_envs, -1), dim=1)  # [num_envs]
+            # Count number of target pixels per environment
+            num_target_pixels = target_mask.sum(dim=(1, 2))  # [num_envs]
 
-            # Only compute bbox for environments where target is found
+            # Check if target exists with sufficient pixels in each environment
+            min_pixels = getattr(self.task_config, "min_pixels_on_target", 1)
+            target_found = num_target_pixels >= min_pixels  # [num_envs]
+
+            # Only compute bbox for environments where target is found with sufficient pixels
             if torch.any(target_found):
                 # Find rows and columns where target is present for all environments at once
                 y_has_target = torch.any(target_mask, dim=2)  # [num_envs, height] - True if any pixel in row has target
@@ -394,10 +405,10 @@ class TrackFollowTask(NavigationTask):
     def compute_target_visibility_reward(self, crashes):
         """
         Compute reward for keeping the target visible in the camera frame.
-        
+
         Args:
             crashes: Tensor indicating which environments have crashed
-            
+
         Returns:
             visibility_reward: Tensor of rewards for target visibility
 
@@ -418,18 +429,18 @@ class TrackFollowTask(NavigationTask):
     def compute_altitude_reward(self, obs_dict, crashes):
         """
         Compute reward for maintaining optimal altitude above terrain.
-        
+
         When target is NOT visible:
             - Incentivizes flying at desired_altitude (80% of max camera range) above terrain
             - Uses exponential reward that decays with distance from desired altitude
-        
+
         When target IS visible:
             - Maxes out the reward so altitude doesn't interfere with target tracking
-        
+
         Args:
             obs_dict: Dictionary containing robot observations
             crashes: Tensor indicating which environments have crashed
-            
+
         Returns:
             altitude_reward: Tensor of rewards for altitude maintenance
 
@@ -484,23 +495,24 @@ class TrackFollowTask(NavigationTask):
     def compute_exploration_reward(self, obs_dict, crashes):
         """
         Compute reward for exploring the entire region when target not visible.
-        
+
         Uses grid-based coverage: divides environment into cells based on camera FOV at target altitude.
         Rewards visiting unvisited cells. Maxes out when target visible or in grace period.
-        
+
         Args:
             obs_dict: Dictionary containing robot observations
             crashes: Tensor indicating which environments have crashed
-            
+
         Returns:
             exploration_reward: Tensor of rewards for exploration
+
         """
         robot_positions = obs_dict["robot_position"]  # [num_envs, 3]
-        
+
         # Convert robot XY positions to grid cell indices
         # Position relative to environment bounds
         pos_relative = robot_positions[:, 0:2] - self.exploration_env_bounds_min.unsqueeze(0)  # [num_envs, 2]
-        
+
         # Calculate grid cell indices (clamp to valid range)
         grid_x = torch.clamp(
             (pos_relative[:, 0] / self.exploration_grid_cell_size).long(),
@@ -512,27 +524,26 @@ class TrackFollowTask(NavigationTask):
             0,
             self.exploration_grid_size_y - 1,
         )
-        
+
         # Mark current cells as visited (vectorized for all environments)
         env_indices = torch.arange(self.sim_env.num_envs, device=self.device)
         self.exploration_visited_grid[env_indices, grid_x, grid_y] = True
-        
+
         # Count visited cells per environment
         num_visited_cells = self.exploration_visited_grid.sum(dim=(1, 2))  # [num_envs]
-        
+
         # Calculate coverage fraction (fraction of cells visited)
         coverage_fraction = num_visited_cells.float() / self.exploration_total_cells  # [num_envs]
-        
+
         # Reward = magnitude * (num_visited_cells / total_cells) = magnitude * coverage_fraction
         # Higher reward as more cells are explored (incentivizes exploration progress)
         exploration_reward_value = (
-            self.task_config.reward_parameters["exploration_reward_magnitude"]
-            * coverage_fraction
+            self.task_config.reward_parameters["exploration_reward_magnitude"] * coverage_fraction
         )
-        
+
         # Target is considered "visible" if actually visible OR still in grace period
         target_visible_or_grace = self.cached_has_valid_bbox | (self.grace_period_counter > 0)
-        
+
         # Max out exploration reward when target visible or in grace period (doesn't interfere with tracking)
         # Zero out reward when crashed (no reward for crashed environments)
         exploration_reward = torch.where(
@@ -544,7 +555,7 @@ class TrackFollowTask(NavigationTask):
             ),
             torch.zeros((self.sim_env.num_envs,), device=self.device),  # Zero reward if crashed
         )
-        
+
         return exploration_reward
 
     def compute_track_follow_rewards(self, obs_dict, crashes):
@@ -629,9 +640,8 @@ class TrackFollowTask(NavigationTask):
             self.cached_target_bbox[:] = 0.0
 
         # Compute target visibility flag ONCE and cache it
-        self.cached_has_valid_bbox[:] = (
-            (self.cached_target_bbox[:, 2] > self.cached_target_bbox[:, 0]) &
-            (self.cached_target_bbox[:, 3] > self.cached_target_bbox[:, 1])
+        self.cached_has_valid_bbox[:] = (self.cached_target_bbox[:, 2] > self.cached_target_bbox[:, 0]) & (
+            self.cached_target_bbox[:, 3] > self.cached_target_bbox[:, 1]
         )
 
         # Update grace period counter
@@ -713,14 +723,18 @@ class TrackFollowTask(NavigationTask):
 
             # Store in privileged observations: [unit_vec_x, unit_vec_y, unit_vec_z, distance]
             self.task_obs["priviliged_obs"][:, 0:3] = unit_vec_to_tgt
-            self.task_obs["priviliged_obs"][:, 3] = dist_to_tgt / 5.0  # Normalize distance (divide by 5.0 like in NavigationTask)
+            self.task_obs["priviliged_obs"][:, 3] = (
+                dist_to_tgt / 5.0
+            )  # Normalize distance (divide by 5.0 like in NavigationTask)
 
         # Save segmentation visualization (only saves every N steps internally)
         # self.save_segmentation_visualization()
         nan_mask = torch.isnan(self.task_obs["observations"])
         inf_mask = torch.isinf(self.task_obs["observations"])
         if torch.any(nan_mask) or torch.any(inf_mask):
-            logger.warning(f"Found NaN/Inf in observations. NaN count: {torch.sum(nan_mask)}, Inf count: {torch.sum(inf_mask)}")
+            logger.warning(
+                f"Found NaN/Inf in observations. NaN count: {torch.sum(nan_mask)}, Inf count: {torch.sum(inf_mask)}"
+            )
             self.task_obs["observations"][nan_mask | inf_mask] = 0.0
 
         # Check for NaN/Inf in privileged observations
@@ -728,7 +742,9 @@ class TrackFollowTask(NavigationTask):
             priv_nan_mask = torch.isnan(self.task_obs["priviliged_obs"])
             priv_inf_mask = torch.isinf(self.task_obs["priviliged_obs"])
             if torch.any(priv_nan_mask) or torch.any(priv_inf_mask):
-                logger.warning(f"Found NaN/Inf in privileged observations. NaN count: {torch.sum(priv_nan_mask)}, Inf count: {torch.sum(priv_inf_mask)}")
+                logger.warning(
+                    f"Found NaN/Inf in privileged observations. NaN count: {torch.sum(priv_nan_mask)}, Inf count: {torch.sum(priv_inf_mask)}"
+                )
                 self.task_obs["priviliged_obs"][priv_nan_mask | priv_inf_mask] = 0.0
 
 
