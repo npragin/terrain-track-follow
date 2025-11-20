@@ -134,8 +134,12 @@ class IsaacGymEnv(BaseManager):
             return
 
         resolution = getattr(self.cfg.env, "terrain_resolution", 256)
-        scale_x = self.cfg.env.upper_bound_min[0] - self.cfg.env.lower_bound_min[0]
-        scale_y = self.cfg.env.upper_bound_min[1] - self.cfg.env.lower_bound_min[1]
+        num_per_row = int(np.ceil(np.sqrt(self.cfg.env.num_envs)))
+        num_rows = int(np.ceil(self.cfg.env.num_envs / num_per_row))
+        base_scale_x = self.cfg.env.upper_bound_min[0] - self.cfg.env.lower_bound_min[0]
+        base_scale_y = self.cfg.env.upper_bound_min[1] - self.cfg.env.lower_bound_min[1]
+        scale_x = base_scale_x * num_per_row
+        scale_y = base_scale_y * num_rows
         amplitude = getattr(self.cfg.env, "terrain_amplitude", 2.0)
         octaves = getattr(self.cfg.env, "terrain_octaves", 6)
         frequency = getattr(self.cfg.env, "terrain_frequency", 0.1)
@@ -172,8 +176,8 @@ class IsaacGymEnv(BaseManager):
         heightfield_params.vertical_scale = amplitude / 32767.0
         heightfield_params.column_scale = scale_x / resolution
         heightfield_params.row_scale = scale_y / resolution
-        heightfield_params.transform.p.x = -scale_x / 2.0
-        heightfield_params.transform.p.y = -scale_y / 2.0
+        heightfield_params.transform.p.x = -scale_x / 4.0
+        heightfield_params.transform.p.y = -scale_y / 4.0
         heightfield_params.transform.p.z = amplitude / 2.0  # Offset so terrain starts at z=0
 
         self.gym.add_heightfield(self.sim, heightfield_data, heightfield_params)
@@ -185,25 +189,17 @@ class IsaacGymEnv(BaseManager):
         """
         Create an environment with the given id
         """
-        # Determine grid layout based on config
-        overlap_environments = getattr(self.cfg.env, "overlap_environments", False)
-
-        if overlap_environments:
-            min_bound_vec3 = gymapi.Vec3(0.0, 0.0, 0.0)
-            max_bound_vec3 = gymapi.Vec3(0.0, 0.0, 0.0)
-            num_per_row = self.cfg.env.num_envs
-        else:
-            min_bound_vec3 = gymapi.Vec3(
-                self.cfg.env.lower_bound_min[0],
-                self.cfg.env.lower_bound_min[1],
-                self.cfg.env.lower_bound_min[2],
-            )
-            max_bound_vec3 = gymapi.Vec3(
-                self.cfg.env.upper_bound_max[0],
-                self.cfg.env.upper_bound_max[1],
-                self.cfg.env.upper_bound_max[2],
-            )
-            num_per_row = int(np.sqrt(self.cfg.env.num_envs))
+        min_bound_vec3 = gymapi.Vec3(
+            self.cfg.env.lower_bound_min[0],
+            self.cfg.env.lower_bound_min[1],
+            self.cfg.env.lower_bound_min[2],
+        )
+        max_bound_vec3 = gymapi.Vec3(
+            self.cfg.env.upper_bound_max[0],
+            self.cfg.env.upper_bound_max[1],
+            self.cfg.env.upper_bound_max[2],
+        )
+        num_per_row = int(np.ceil(np.sqrt(self.cfg.env.num_envs)))
 
         env_handle = self.gym.create_env(
             self.sim,
