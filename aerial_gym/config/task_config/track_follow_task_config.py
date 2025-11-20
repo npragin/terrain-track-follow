@@ -84,6 +84,10 @@ class task_config:
         success_rate_for_increase = 0.7
         success_rate_for_decrease = 0.6
 
+        enable_bounds_termination = True
+        bounds_shrink_factor_min = 0.05
+        bounds_shrink_factor_max = 1.0
+
         def update_curriculim_level(self, success_rate, current_level):
             if success_rate > self.success_rate_for_increase:
                 return min(current_level + self.increase_step, self.max_level)

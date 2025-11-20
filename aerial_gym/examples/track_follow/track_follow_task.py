@@ -12,7 +12,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from aerial_gym.utils.math import get_euler_xyz_tensor, quat_rotate_inverse
+from aerial_gym.utils.math import (
+    get_euler_xyz_tensor,
+    quat_rotate_inverse,
+    torch_interpolate_ratio,
+    torch_rand_float_tensor,
+)
 
 
 class TrackFollowTask(NavigationTask):
@@ -120,6 +125,47 @@ class TrackFollowTask(NavigationTask):
             logger.info(
                 f"TrackFollowTask: Added privileged observations with dimension {self.task_config.privileged_observation_space_dim}"
             )
+
+        # Curriculum-based bounds checking setup
+        self.base_env_bounds_min = self.obs_dict["env_bounds_min"].clone()  # [num_envs, 3]
+        self.base_env_bounds_max = self.obs_dict["env_bounds_max"].clone()  # [num_envs, 3]
+
+        self.bounds_shrink_factor_min = getattr(self.task_config.curriculum, "bounds_shrink_factor_min", 0.05)
+        self.bounds_shrink_factor_max = getattr(self.task_config.curriculum, "bounds_shrink_factor_max", 1.0)
+        self.enable_bounds_termination = getattr(self.task_config.curriculum, "enable_bounds_termination", True)
+
+        logger.info(
+            f"TrackFollowTask: Curriculum bounds enabled={self.enable_bounds_termination}, "
+            f"shrink_factor: {self.bounds_shrink_factor_min:.2f} (min) -> {self.bounds_shrink_factor_max:.2f} (max)"
+        )
+
+    def get_current_bounds(self):
+        """Compute current bounds based on curriculum level."""
+        if not self.enable_bounds_termination:
+            return self.base_env_bounds_min.clone(), self.base_env_bounds_max.clone()
+
+        current_shrink_factor = (
+            self.bounds_shrink_factor_min
+            + (self.bounds_shrink_factor_max - self.bounds_shrink_factor_min) * self.curriculum_progress_fraction
+        )
+
+        bounds_center = (self.base_env_bounds_min + self.base_env_bounds_max) / 2.0
+        bounds_size = self.base_env_bounds_max - self.base_env_bounds_min
+        current_size = bounds_size * current_shrink_factor
+        current_bounds_min = bounds_center - current_size / 2.0
+        current_bounds_max = bounds_center + current_size / 2.0
+
+        return current_bounds_min, current_bounds_max
+
+    def check_bounds_violation(self, position):
+        """Check if position violates current curriculum bounds."""
+        if not self.enable_bounds_termination:
+            return torch.zeros(position.shape[0], device=self.device, dtype=torch.bool)
+
+        current_bounds_min, current_bounds_max = self.get_current_bounds()
+        below_min = (position < current_bounds_min).any(dim=1)
+        above_max = (position > current_bounds_max).any(dim=1)
+        return below_min | above_max
 
     def extract_target_bbox_from_segmentation(self, segmentation_mask):
         """
@@ -385,22 +431,67 @@ class TrackFollowTask(NavigationTask):
                 f"Saved depth visualization to {depth_save_path} (range: [{depth_min_m:.2f}, {depth_max_m:.2f}] m)"
             )
 
-    def update_target_position_from_asset(self):
-        """
-        Update self.target_position from the actual target object position in the environment.
-        This ensures rewards are based on the actual target location, not a random position.
-        """
+    def _ensure_env_ids_tensor(self, env_ids):
+        """Convert env_ids to tensor on correct device."""
+        if not isinstance(env_ids, torch.Tensor):
+            return torch.tensor(env_ids, device=self.device, dtype=torch.long)
+        return env_ids.to(self.device)
+
+    def _resample_positions_within_bounds(self, env_ids):
+        """Resample positions within curriculum bounds for specified environments."""
+        env_ids_tensor = self._ensure_env_ids_tensor(env_ids)
+        current_bounds_min, current_bounds_max = self.get_current_bounds()
+
+        random_ratios = torch_rand_float_tensor(
+            torch.zeros((len(env_ids_tensor), 3), device=self.device),
+            torch.ones((len(env_ids_tensor), 3), device=self.device),
+        )
+
+        return torch_interpolate_ratio(
+            current_bounds_min[env_ids_tensor],
+            current_bounds_max[env_ids_tensor],
+            random_ratios,
+        )
+
+    def clamp_target_to_curriculum_bounds(self, env_ids=None):
+        """Clamp target position to curriculum bounds."""
+        if not self.enable_bounds_termination:
+            return
+
+        current_bounds_min, current_bounds_max = self.get_current_bounds()
+
+        if env_ids is None:
+            self.target_position[:] = torch.clamp(self.target_position, current_bounds_min, current_bounds_max)
+        else:
+            env_ids_tensor = self._ensure_env_ids_tensor(env_ids)
+            self.target_position[env_ids_tensor] = torch.clamp(
+                self.target_position[env_ids_tensor],
+                current_bounds_min[env_ids_tensor],
+                current_bounds_max[env_ids_tensor],
+            )
+
+    def resample_target_within_curriculum_bounds(self, env_ids):
+        """Resample target position within curriculum bounds."""
+        if not self.enable_bounds_termination:
+            return
+
+        env_ids_tensor = self._ensure_env_ids_tensor(env_ids)
+        new_positions = self._resample_positions_within_bounds(env_ids_tensor)
+        self.target_position[env_ids_tensor] = new_positions
+
         if self.target_asset_idx is not None and hasattr(self.sim_env, "asset_manager"):
             asset_manager = self.sim_env.asset_manager
             if asset_manager is not None and hasattr(asset_manager, "env_asset_state_tensor"):
-                # Get actual target position from asset state tensor
-                # env_asset_state_tensor shape: [num_envs, num_assets, 13]
-                # Position is at indices [0:3] (x, y, z)
-                actual_target_pos = asset_manager.env_asset_state_tensor[:, self.target_asset_idx, 0:3]
-                self.target_position[:] = actual_target_pos
+                asset_manager.env_asset_state_tensor[env_ids_tensor, self.target_asset_idx, 0:3] = new_positions
+
+    def update_target_position_from_asset(self):
+        """Update target_position from actual target object position in the environment."""
+        if self.target_asset_idx is not None and hasattr(self.sim_env, "asset_manager"):
+            asset_manager = self.sim_env.asset_manager
+            if asset_manager is not None and hasattr(asset_manager, "env_asset_state_tensor"):
+                self.target_position[:] = asset_manager.env_asset_state_tensor[:, self.target_asset_idx, 0:3]
             else:
                 logger.warning("TrackFollowTask: Cannot access env_asset_state_tensor. Using previous target_position.")
-        # If target_asset_idx is None, target_position remains as set in reset_idx (from parent class)
 
     def compute_target_visibility_reward(self, crashes):
         """
@@ -568,45 +659,59 @@ class TrackFollowTask(NavigationTask):
         return visibility_reward + altitude_reward + exploration_reward
 
     def compute_rewards_and_crashes(self, obs_dict):
-        """
-        Override parent method to add target visibility and altitude rewards.
-        Computes base rewards from parent, then adds track-follow specific rewards.
-        """
-        # Get base rewards from parent class (distance, yaw, action penalties, etc.)
+        """Override parent to add track-follow rewards and bounds violation checks."""
         base_rewards, crashes = super().compute_rewards_and_crashes(obs_dict)
 
-        # Compute individual reward components
+        if self.enable_bounds_termination:
+            out_of_bounds = self.check_bounds_violation(obs_dict["robot_position"])
+            crashes[:] = torch.where(out_of_bounds, torch.ones_like(crashes), crashes)
+
         track_follow_rewards = self.compute_track_follow_rewards(obs_dict, crashes)
-
-        # Combine all rewards
-        total_rewards = base_rewards + track_follow_rewards
-
-        return total_rewards, crashes
+        return base_rewards + track_follow_rewards, crashes
 
     def reset_idx(self, env_ids):
-        """
-        Override reset_idx to set target_position from actual target object position
-        instead of random position based on environment bounds.
-        """
-        # Call parent reset_idx first to set up environment
-        # But we'll override the target_position afterwards
+        """Override reset_idx to ensure robots and targets spawn within curriculum bounds."""
         super().reset_idx(env_ids)
-
-        # Update target_position from actual target object position
         self.update_target_position_from_asset()
 
-        # Clear cached bbox and visibility flag for reset environments (will be recomputed on next step)
+        if self.enable_bounds_termination:
+            env_ids_tensor = self._ensure_env_ids_tensor(env_ids)
+
+            # Check robot in bounds
+            out_of_bounds_full = self.check_bounds_violation(self.obs_dict["robot_position"])
+            out_of_bounds = out_of_bounds_full[env_ids_tensor]
+
+            if torch.any(out_of_bounds):
+                out_of_bounds_env_ids = env_ids_tensor[out_of_bounds]
+                new_positions = self._resample_positions_within_bounds(out_of_bounds_env_ids)
+
+                robot_state = self.sim_env.robot_manager.robot.robot_state
+                robot_state[out_of_bounds_env_ids, 0:3] = new_positions
+                self.obs_dict["robot_position"][out_of_bounds_env_ids] = new_positions
+
+                self.sim_env.IGE_env.write_to_sim(refresh_robot_state=False)
+
+                logger.debug(
+                    f"TrackFollowTask: Resampled {len(out_of_bounds_env_ids)} robot positions to be within curriculum bounds"
+                )
+
+            # Check target in bounds
+            out_of_bounds_full = self.check_bounds_violation(self.target_position)
+            out_of_bounds = out_of_bounds_full[env_ids_tensor]
+
+            if torch.any(out_of_bounds):
+                out_of_bounds_env_ids = env_ids_tensor[out_of_bounds]
+                self.resample_target_within_curriculum_bounds(out_of_bounds_env_ids)
+                logger.debug(
+                    f"TrackFollowTask: Resampled {len(out_of_bounds_env_ids)} target positions to be within curriculum bounds"
+                )
+
         self.cached_target_bbox[env_ids] = 0.0
         self.cached_has_valid_bbox[env_ids] = False
-
-        # Reset grace period counter for reset environments (start at zero for new episode)
         self.grace_period_counter[env_ids] = 0
-
-        # Reset exploration visited grid for reset environments (start fresh for new episode)
         self.exploration_visited_grid[env_ids] = False
 
-        # Log for debugging
-        if len(env_ids) > 0 and len(env_ids) <= 4:  # Only log for small number of envs
+        if len(env_ids) > 0 and len(env_ids) <= 4:
             env_ids_list = env_ids.cpu().numpy().tolist() if isinstance(env_ids, torch.Tensor) else env_ids
             for env_id in env_ids_list:
                 logger.debug(
@@ -614,24 +719,20 @@ class TrackFollowTask(NavigationTask):
                 )
 
     def step(self, actions):
-        """
-        Override step to update target_position from actual target object before computing rewards.
-        This handles cases where the target might move during the episode.
-        """
-        # Transform actions (same as parent)
+        """Override step to update target position and enforce curriculum bounds."""
         transformed_action = self.action_transformation_function(actions)
         logger.debug(f"raw_action: {actions[0]}, transformed action: {transformed_action[0]}")
 
-        # Step the environment (this may update asset positions including target)
         self.sim_env.step(actions=transformed_action)
-
-        # Update target position from actual asset position AFTER sim_env.step()
-        # but BEFORE computing rewards. This ensures rewards are based on current target location.
         self.update_target_position_from_asset()
 
-        # Extract target bounding box ONCE and cache it for use in both rewards and observations
-        # This avoids duplicate extraction (was being done in both add_target_visibility_reward
-        # and process_obs_for_task)
+        if self.enable_bounds_termination:
+            self.clamp_target_to_curriculum_bounds()
+            if self.target_asset_idx is not None and hasattr(self.sim_env, "asset_manager"):
+                asset_manager = self.sim_env.asset_manager
+                if asset_manager is not None and hasattr(asset_manager, "env_asset_state_tensor"):
+                    asset_manager.env_asset_state_tensor[:, self.target_asset_idx, 0:3] = self.target_position
+
         if "segmentation_pixels" in self.obs_dict:
             self.cached_target_bbox[:] = self.extract_target_bbox_from_segmentation(
                 self.obs_dict["segmentation_pixels"]
