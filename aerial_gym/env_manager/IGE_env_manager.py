@@ -138,8 +138,9 @@ class IsaacGymEnv(BaseManager):
         num_rows = int(np.ceil(self.cfg.env.num_envs / num_per_row))
         base_scale_x = self.cfg.env.upper_bound_min[0] - self.cfg.env.lower_bound_min[0]
         base_scale_y = self.cfg.env.upper_bound_min[1] - self.cfg.env.lower_bound_min[1]
-        scale_x = base_scale_x * num_per_row
-        scale_y = base_scale_y * num_rows
+        terrain_extension = getattr(self.cfg.env, "terrain_extension", 0.0)
+        scale_x = base_scale_x * num_per_row + 2.0 * terrain_extension
+        scale_y = base_scale_y * num_rows + 2.0 * terrain_extension
         amplitude = getattr(self.cfg.env, "terrain_amplitude", 2.0)
         octaves = getattr(self.cfg.env, "terrain_octaves", 6)
         frequency = getattr(self.cfg.env, "terrain_frequency", 0.1)

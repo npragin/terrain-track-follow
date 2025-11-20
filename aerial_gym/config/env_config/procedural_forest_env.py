@@ -49,6 +49,8 @@ class ProceduralForestEnvCfg:
         terrain_persistence = 0.6  # Amplitude multiplier per octave
         # Terrain seed: None = random (fixed across resets due to Isaac Gym limitation)
         terrain_seed = None
+        # Heightfield extension: extend heightfield beyond environments by this amount on each side (meters)
+        terrain_extension = 20.0
 
         # Target movement configuration
         target_velocity_change_interval = 100  # Steps between velocity changes
