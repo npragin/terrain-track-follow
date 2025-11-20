@@ -51,13 +51,16 @@ class task_config:
         "collision_penalty": -100.0,
 
         # Altitude reward: incentivize flying at optimal height when searching for target
-        "altitude_reward_magnitude": 8.0,
+        "altitude_reward_magnitude": 6.0,
         "altitude_reward_exponent": 0.05,
         "desired_altitude_ratio": 0.8,
         
         # Grace period: number of frames to maintain "target visible" rewards after losing visual contact
         # Default: 30 frames = 0.3 seconds (at dt=0.01s per frame)
         "target_visibility_grace_period_frames": 200,
+        
+        # Exploration reward: incentivize exploring entire region when target not visible
+        "exploration_reward_magnitude": 2.0,  # Max reward when all cells visited
     }
 
     class vae_config:

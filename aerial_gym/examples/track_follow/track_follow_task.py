@@ -58,9 +58,43 @@ class TrackFollowTask(NavigationTask):
             (self.sim_env.num_envs,), device=self.device, dtype=torch.int32, requires_grad=False
         )
 
-        # Get camera max_range from robot configuration
+        # Get camera max_range and FOV from robot configuration
         robot_cfg = self.sim_env.robot_manager.robot.cfg
         self.camera_max_range = robot_cfg.sensor_config.camera_config.max_range
+        self.camera_horizontal_fov_deg = robot_cfg.sensor_config.camera_config.horizontal_fov_deg
+        
+        # Calculate exploration grid cell size based on camera FOV and target altitude
+        # Assumes camera facing directly downward on flat ground
+        desired_altitude = self.task_config.reward_parameters["desired_altitude_ratio"] * self.camera_max_range
+        horizontal_fov_rad = np.deg2rad(self.camera_horizontal_fov_deg)
+        # Coverage at target altitude: 2 * altitude * tan(FOV/2)
+        grid_cell_size = 2.0 * desired_altitude * np.tan(horizontal_fov_rad / 2.0)
+        
+        # Get environment bounds (XY plane)
+        env_bounds_min = self.obs_dict["env_bounds_min"][0, 0:2].cpu().numpy()  # [x_min, y_min]
+        env_bounds_max = self.obs_dict["env_bounds_max"][0, 0:2].cpu().numpy()  # [x_max, y_max]
+        env_size_x = float(env_bounds_max[0] - env_bounds_min[0])
+        env_size_y = float(env_bounds_max[1] - env_bounds_min[1])
+        
+        # Calculate grid dimensions (round up to nearest integer)
+        self.exploration_grid_size_x = int(np.ceil(env_size_x / grid_cell_size.item()))
+        self.exploration_grid_size_y = int(np.ceil(env_size_y / grid_cell_size.item()))
+        self.exploration_total_cells = self.exploration_grid_size_x * self.exploration_grid_size_y
+        self.exploration_grid_cell_size = grid_cell_size
+        self.exploration_env_bounds_min = torch.tensor(env_bounds_min, device=self.device, dtype=torch.float32)
+        
+        # Storage for visited cells: [num_envs, grid_size_x, grid_size_y] boolean tensor
+        self.exploration_visited_grid = torch.zeros(
+            (self.sim_env.num_envs, self.exploration_grid_size_x, self.exploration_grid_size_y),
+            device=self.device,
+            dtype=torch.bool,
+            requires_grad=False,
+        )
+        
+        logger.info(
+            f"Exploration grid: {self.exploration_grid_size_x}x{self.exploration_grid_size_y} = {self.exploration_total_cells} cells, "
+            f"cell_size={grid_cell_size:.2f}m (based on FOV={self.camera_horizontal_fov_deg:.1f}°, altitude={desired_altitude:.2f}m)"
+        )
 
         # Add privileged observations to observation space and task_obs
         # Privileged observations include vec_to_target (3D) and dist_to_target (1D) for the critic
@@ -447,13 +481,80 @@ class TrackFollowTask(NavigationTask):
 
         return altitude_reward
 
+    def compute_exploration_reward(self, obs_dict, crashes):
+        """
+        Compute reward for exploring the entire region when target not visible.
+        
+        Uses grid-based coverage: divides environment into cells based on camera FOV at target altitude.
+        Rewards visiting unvisited cells. Maxes out when target visible or in grace period.
+        
+        Args:
+            obs_dict: Dictionary containing robot observations
+            crashes: Tensor indicating which environments have crashed
+            
+        Returns:
+            exploration_reward: Tensor of rewards for exploration
+        """
+        robot_positions = obs_dict["robot_position"]  # [num_envs, 3]
+        
+        # Convert robot XY positions to grid cell indices
+        # Position relative to environment bounds
+        pos_relative = robot_positions[:, 0:2] - self.exploration_env_bounds_min.unsqueeze(0)  # [num_envs, 2]
+        
+        # Calculate grid cell indices (clamp to valid range)
+        grid_x = torch.clamp(
+            (pos_relative[:, 0] / self.exploration_grid_cell_size).long(),
+            0,
+            self.exploration_grid_size_x - 1,
+        )
+        grid_y = torch.clamp(
+            (pos_relative[:, 1] / self.exploration_grid_cell_size).long(),
+            0,
+            self.exploration_grid_size_y - 1,
+        )
+        
+        # Mark current cells as visited (vectorized for all environments)
+        env_indices = torch.arange(self.sim_env.num_envs, device=self.device)
+        self.exploration_visited_grid[env_indices, grid_x, grid_y] = True
+        
+        # Count visited cells per environment
+        num_visited_cells = self.exploration_visited_grid.sum(dim=(1, 2))  # [num_envs]
+        
+        # Calculate coverage fraction (fraction of cells visited)
+        coverage_fraction = num_visited_cells.float() / self.exploration_total_cells  # [num_envs]
+        
+        # Reward = magnitude * (num_visited_cells / total_cells) = magnitude * coverage_fraction
+        # Higher reward as more cells are explored (incentivizes exploration progress)
+        exploration_reward_value = (
+            self.task_config.reward_parameters["exploration_reward_magnitude"]
+            * coverage_fraction
+        )
+        
+        # Target is considered "visible" if actually visible OR still in grace period
+        target_visible_or_grace = self.cached_has_valid_bbox | (self.grace_period_counter > 0)
+        
+        # Max out exploration reward when target visible or in grace period (doesn't interfere with tracking)
+        # Zero out reward when crashed (no reward for crashed environments)
+        exploration_reward = torch.where(
+            ~crashes,  # Not crashed
+            torch.where(
+                target_visible_or_grace,  # Target visible or in grace period
+                self.task_config.reward_parameters["exploration_reward_magnitude"],  # Max reward
+                exploration_reward_value,  # Reward based on unvisited cells
+            ),
+            torch.zeros((self.sim_env.num_envs,), device=self.device),  # Zero reward if crashed
+        )
+        
+        return exploration_reward
+
     def compute_track_follow_rewards(self, obs_dict, crashes):
         """
         Compute additional rewards for track follow task.
         """
         visibility_reward = self.compute_target_visibility_reward(crashes)
         altitude_reward = self.compute_altitude_reward(obs_dict, crashes)
-        return visibility_reward + altitude_reward
+        exploration_reward = self.compute_exploration_reward(obs_dict, crashes)
+        return visibility_reward + altitude_reward + exploration_reward
 
     def compute_rewards_and_crashes(self, obs_dict):
         """
@@ -489,6 +590,9 @@ class TrackFollowTask(NavigationTask):
 
         # Reset grace period counter for reset environments (start at zero for new episode)
         self.grace_period_counter[env_ids] = 0
+
+        # Reset exploration visited grid for reset environments (start fresh for new episode)
+        self.exploration_visited_grid[env_ids] = False
 
         # Log for debugging
         if len(env_ids) > 0 and len(env_ids) <= 4:  # Only log for small number of envs
