@@ -824,9 +824,10 @@ class TrackFollowTask(NavigationTask):
             torch.zeros_like(self.truncations),
         )
 
-        # successes are the sum of the environments which are to be truncated and have reached the target within a distance threshold
-        successes = self.truncations * (torch.norm(self.target_position - self.obs_dict["robot_position"], dim=1) < 1.0)
-        successes = torch.where(self.terminations > 0, torch.zeros_like(successes), successes)
+        # Success criteria: Bounding box is valid or in grace period at timeout and no failure
+        has_active_or_recent_bbox = self.cached_has_valid_bbox | (self.grace_period_counter > 0)
+        no_failures = self.terminations == 0
+        successes = self.truncations * no_failures * has_active_or_recent_bbox
         timeouts = torch.where(self.truncations > 0, torch.logical_not(successes), torch.zeros_like(successes))
         timeouts = torch.where(
             self.terminations > 0, torch.zeros_like(timeouts), timeouts
