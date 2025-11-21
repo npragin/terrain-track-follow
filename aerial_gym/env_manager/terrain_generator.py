@@ -31,6 +31,8 @@ class TerrainGenerator:
         lacunarity: float = 2.0,
         persistence: float = 0.5,
         seed=None,
+        transform_x: float = None,
+        transform_y: float = None,
     ):
         self.resolution = resolution
         self.scale_x = scale_x
@@ -43,6 +45,8 @@ class TerrainGenerator:
         self.seed = seed if seed is not None else np.random.randint(0, 2**31)
         self._heightmap_cache = None
         self._original_seed = self.seed
+        self.transform_x = transform_x if transform_x is not None else -scale_x / 2.0
+        self.transform_y = transform_y if transform_y is not None else -scale_y / 2.0
 
     def clear_cache(self):
         """Clear the cached heightmap to force regeneration."""
@@ -124,12 +128,19 @@ class TerrainGenerator:
         return heightmap
 
     def sample_height(self, x: float, y: float, heightmap: np.ndarray) -> float:
-        """Sample terrain height at a specific (x, y) position."""
-        local_x = x + self.scale_x / 2.0
-        local_y = y + self.scale_y / 2.0
+        """
+        Sample terrain height at a specific (x, y) position in world coordinates.
+
+        Converts world coordinates to heightmap-relative coordinates using the transform offsets.
+        The heightmap is generated for internal coordinates [0, scale_x] x [0, scale_y],
+        and this method maps world coordinates to that internal coordinate system.
+        """
+        local_x = x - self.transform_x
+        local_y = y - self.transform_y
 
         i = int((local_y / self.scale_y) * (self.resolution - 1))
         j = int((local_x / self.scale_x) * (self.resolution - 1))
+
         i = max(0, min(self.resolution - 1, i))
         j = max(0, min(self.resolution - 1, j))
 

@@ -153,6 +153,11 @@ class IsaacGymEnv(BaseManager):
 
             seed = random.randint(0, 1000000)
 
+        all_x = base_scale_x * num_per_row
+        all_y = base_scale_y * num_rows
+        transform_x = -scale_x / 2.0 - base_scale_x / 2.0 + all_x / 2.0
+        transform_y = -scale_y / 2.0 - base_scale_y / 2.0 + all_y / 2.0
+
         terrain_gen = TerrainGenerator(
             resolution=resolution,
             scale_x=scale_x,
@@ -163,6 +168,8 @@ class IsaacGymEnv(BaseManager):
             lacunarity=lacunarity,
             persistence=persistence,
             seed=seed,
+            transform_x=transform_x,
+            transform_y=transform_y,
         )
         heightmap = terrain_gen.generate_heightmap(use_cache=True)
 
@@ -177,8 +184,8 @@ class IsaacGymEnv(BaseManager):
         heightfield_params.vertical_scale = amplitude / 32767.0
         heightfield_params.column_scale = scale_x / resolution
         heightfield_params.row_scale = scale_y / resolution
-        heightfield_params.transform.p.x = -scale_x / 4.0
-        heightfield_params.transform.p.y = -scale_y / 4.0
+        heightfield_params.transform.p.x = transform_x
+        heightfield_params.transform.p.y = transform_y
         heightfield_params.transform.p.z = amplitude / 2.0  # Offset so terrain starts at z=0
 
         self.gym.add_heightfield(self.sim, heightfield_data, heightfield_params)
