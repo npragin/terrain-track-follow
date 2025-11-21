@@ -31,10 +31,10 @@ class ProceduralForestEnvCfg:
 
         # Environment bounds [x_min, y_min, z_min] to [x_max, y_max, z_max] in meters
         # Terrain starts at z=0 and extends up to terrain_amplitude
-        lower_bound_min = [-10.0, -10.0, 0.0]
-        lower_bound_max = [-10.0, -10.0, 0.0]
-        upper_bound_min = [10.0, 10.0, 10.0]
-        upper_bound_max = [10.0, 10.0, 10.0]
+        lower_bound_min = [-50.0, -50.0, 0.0]
+        lower_bound_max = [-50.0, -50.0, 0.0]
+        upper_bound_min = [50.0, 50.0, 30.0]
+        upper_bound_max = [50.0, 50.0, 30.0]
 
         # Tree density: trees per square meter (num_assets = tree_density * env_area)
         tree_density = 0.02
@@ -42,7 +42,7 @@ class ProceduralForestEnvCfg:
         # Terrain generation configuration (Simplex noise)
         enable_terrain = True
         terrain_resolution = 256
-        terrain_amplitude = 0.1  # Total height range (terrain offset to start at z=0)
+        terrain_amplitude = 20.0  # Total height range (terrain offset to start at z=0)
         terrain_frequency = 0.3  # Base frequency (lower=smooth, higher=rough)
         terrain_octaves = 8  # Number of noise layers
         terrain_lacunarity = 2.0  # Frequency multiplier per octave

@@ -1,5 +1,3 @@
-from typing import ClassVar
-
 import torch
 
 from aerial_gym import AERIAL_GYM_DIRECTORY
@@ -32,7 +30,7 @@ class task_config:
     # Minimum number of pixels that must be on the target for the bounding box to register
     min_pixels_on_target = 30
 
-    reward_parameters: ClassVar[dict[str, float]] = {
+    reward_parameters = {
         # Use during both phases
         "x_action_diff_penalty_magnitude": 0.8,
         "x_action_diff_penalty_exponent": 3.333,
