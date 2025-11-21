@@ -4,6 +4,7 @@ from aerial_gym.utils.logging import CustomLogger
 
 logger = CustomLogger(__name__)
 
+import math
 import os
 from pathlib import Path
 
@@ -18,6 +19,33 @@ from aerial_gym.utils.math import (
     torch_interpolate_ratio,
     torch_rand_float_tensor,
 )
+
+
+def compute_env_size(t, s, grid, max_env_size, scale=1.0):
+    """
+    Compute environment size based on episode length, drone max speed, and grid cell size.
+
+    Args:
+        t: episode length (time in seconds)
+        s: drone max speed (m/s)
+        grid: exploration_grid_cell_size (m)
+        max_env_size: maximum environment size (m) - used to determine upper bound for iteration
+        scale: scaling factor to apply to the computed environment width
+
+    Returns:
+        w: environment width (m) scaled by scale parameter
+
+    """
+    max_c = max(1, math.ceil(max_env_size / grid))
+
+    for c in range(1, max_c + 1):
+        w = t * s / (c + 1) + grid
+        if c == math.ceil(w / grid):
+            return w * scale
+    logger.warning(
+        f"No valid solution found for t={t}, s={s}, grid={grid}, max_env_size={max_env_size}. Returning max_env_size."
+    )
+    return max_env_size * scale
 
 
 class TrackFollowTask(NavigationTask):
@@ -152,30 +180,78 @@ class TrackFollowTask(NavigationTask):
         self.base_env_bounds_min = self.obs_dict["env_bounds_min"].clone()  # [num_envs, 3]
         self.base_env_bounds_max = self.obs_dict["env_bounds_max"].clone()  # [num_envs, 3]
 
-        self.bounds_shrink_factor_min = getattr(self.task_config.curriculum, "bounds_shrink_factor_min", 0.05)
-        self.bounds_shrink_factor_max = getattr(self.task_config.curriculum, "bounds_shrink_factor_max", 1.0)
-        self.enable_bounds_termination = getattr(self.task_config.curriculum, "enable_bounds_termination", True)
+        bounds_size = self.base_env_bounds_max[0] - self.base_env_bounds_min[0]
+        env_size_x = float(bounds_size[0].item() if hasattr(bounds_size[0], "item") else bounds_size[0])
+        env_size_y = float(bounds_size[1].item() if hasattr(bounds_size[1], "item") else bounds_size[1])
+        self.max_env_size = max(env_size_x, env_size_y)
+
+        self.enable_bounds_termination = self.task_config.curriculum.enable_bounds_termination
+
+        self.dt = self.obs_dict.get("dt", self.sim_env.sim_config.sim.dt)
+        if isinstance(self.dt, torch.Tensor):
+            self.dt = self.dt.item() if self.dt.numel() == 1 else self.dt[0].item()
+
+        self.drone_max_speed = self.task_config.max_speed
+        self.base_episode_len_steps = self.task_config.episode_len_steps
+        self.episode_len_fraction_min = self.task_config.curriculum.episode_len_fraction_min
+        self.env_size_scale = self.task_config.curriculum.env_size_scale
+
+        # Cache for current bounds to avoid recomputing on every call
+        self._cached_bounds_min = None
+        self._cached_bounds_max = None
+        self._cached_curriculum_progress = None
 
         logger.info(
             f"TrackFollowTask: Curriculum bounds enabled={self.enable_bounds_termination}, "
-            f"shrink_factor: {self.bounds_shrink_factor_min:.2f} (min) -> {self.bounds_shrink_factor_max:.2f} (max)"
+            f"episode_len_fraction_min: {self.episode_len_fraction_min:.2f}, "
+            f"drone_max_speed: {self.drone_max_speed:.2f} m/s, dt: {self.dt:.4f} s, "
+            f"max_env_size: {self.max_env_size:.2f} m"
         )
 
+    def get_current_episode_length_steps(self):
+        """Compute current episode length in steps based on curriculum level."""
+        current_fraction = (
+            self.episode_len_fraction_min + (1.0 - self.episode_len_fraction_min) * self.curriculum_progress_fraction
+        )
+        return int(self.base_episode_len_steps * current_fraction)
+
     def get_current_bounds(self):
-        """Compute current bounds based on curriculum level."""
+        """Compute current bounds based on curriculum level using episode length. Cached for performance."""
         if not self.enable_bounds_termination:
             return self.base_env_bounds_min.clone(), self.base_env_bounds_max.clone()
 
-        current_shrink_factor = (
-            self.bounds_shrink_factor_min
-            + (self.bounds_shrink_factor_max - self.bounds_shrink_factor_min) * self.curriculum_progress_fraction
+        if (
+            self._cached_bounds_min is not None
+            and self._cached_bounds_max is not None
+            and self._cached_curriculum_progress == self.curriculum_progress_fraction
+        ):
+            return self._cached_bounds_min, self._cached_bounds_max
+
+        current_episode_len_steps = self.get_current_episode_length_steps()
+        t_seconds = current_episode_len_steps * self.dt
+
+        grid_cell_size = float(
+            self.exploration_grid_cell_size.item()
+            if hasattr(self.exploration_grid_cell_size, "item")
+            else self.exploration_grid_cell_size
+        )
+        env_width = compute_env_size(
+            t_seconds, self.drone_max_speed, grid_cell_size, self.max_env_size, self.env_size_scale
         )
 
         bounds_center = (self.base_env_bounds_min + self.base_env_bounds_max) / 2.0
         bounds_size = self.base_env_bounds_max - self.base_env_bounds_min
-        current_size = bounds_size * current_shrink_factor
+
+        current_size = bounds_size.clone()
+        current_size[:, 0] = env_width
+        current_size[:, 1] = env_width
+
         current_bounds_min = bounds_center - current_size / 2.0
         current_bounds_max = bounds_center + current_size / 2.0
+
+        self._cached_bounds_min = current_bounds_min
+        self._cached_bounds_max = current_bounds_max
+        self._cached_curriculum_progress = self.curriculum_progress_fraction
 
         return current_bounds_min, current_bounds_max
 
@@ -818,8 +894,9 @@ class TrackFollowTask(NavigationTask):
         if self.task_config.return_state_before_reset == True:
             return_tuple = self.get_return_tuple()
 
+        current_episode_len_steps = self.get_current_episode_length_steps()
         self.truncations[:] = torch.where(
-            self.sim_env.sim_steps > self.task_config.episode_len_steps,
+            self.sim_env.sim_steps > current_episode_len_steps,
             torch.ones_like(self.truncations),
             torch.zeros_like(self.truncations),
         )

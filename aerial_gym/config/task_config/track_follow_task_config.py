@@ -19,7 +19,8 @@ class task_config:
     # privileged_observation_space_dim = 0  # vec_to_target (3D) + dist_to_target (1D) for privileged critic
 
     action_space_dim = 4
-    episode_len_steps = 1800  # real physics time for simulation is this value multiplied by sim.dt
+    episode_len_steps = 18000  # real physics time for simulation is this value multiplied by sim.dt
+    max_speed = 10.0
 
     return_state_before_reset = False  # False as usually state is returned for next episode after reset
     # user can set the above to true if they so desire
@@ -85,8 +86,8 @@ class task_config:
         success_rate_for_decrease = 0.6
 
         enable_bounds_termination = True
-        bounds_shrink_factor_min = 0.05
-        bounds_shrink_factor_max = 1.0
+        episode_len_fraction_min = 0.1
+        env_size_scale = 1.0  # Scaling factor for computed environment size
 
         def update_curriculim_level(self, success_rate, current_level):
             if success_rate > self.success_rate_for_increase:
@@ -106,7 +107,7 @@ class task_config:
 
     def action_transformation_function(action):
         clamped_action = torch.clamp(action, -1.0, 1.0)
-        max_speed = 10.0  # [m/s]
+        max_speed = task_config.max_speed
         max_yawrate = torch.pi / 3  # [rad/s]
 
         # clamped_action[:, 0:3] = max_speed * clamped_action[:, 0:3]
