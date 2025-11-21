@@ -67,6 +67,9 @@ class TrackFollowTask(NavigationTask):
         robot_cfg = self.sim_env.robot_manager.robot.cfg
         self.camera_max_range = robot_cfg.sensor_config.camera_config.max_range
         self.camera_horizontal_fov_deg = robot_cfg.sensor_config.camera_config.horizontal_fov_deg
+        camera_width = robot_cfg.sensor_config.camera_config.width
+        camera_height = robot_cfg.sensor_config.camera_config.height
+        aspect_ratio = camera_width / camera_height
 
         # Get camera pitch based on sensor type
         if self.task_config.use_warp:
@@ -77,15 +80,18 @@ class TrackFollowTask(NavigationTask):
             camera_pitch_deg = robot_cfg.sensor_config.camera_config.nominal_orientation_euler_deg[1]
         camera_pitch_rad = np.deg2rad(camera_pitch_deg)
 
-        # Calculate exploration grid cell size: 2 * (altitude / cos(angle_from_vertical)) * tan(HFOV/2)
         desired_altitude = self.task_config.reward_parameters["desired_altitude_ratio"] * self.camera_max_range
         horizontal_fov_rad = np.deg2rad(self.camera_horizontal_fov_deg)
+        vertical_fov_rad = 2.0 * np.arctan(np.tan(horizontal_fov_rad / 2.0) / aspect_ratio)
 
         pitch_from_vertical_rad = np.pi / 2.0 + camera_pitch_rad
         cos_pitch = np.clip(np.cos(pitch_from_vertical_rad), np.cos(np.deg2rad(85.0)), 1.0)
-
         distance_along_viewing_ray = desired_altitude / cos_pitch
-        grid_cell_size = 2.0 * distance_along_viewing_ray * np.tan(horizontal_fov_rad / 2.0)
+
+        # Calculate exploration grid cell size: 2 * (altitude / cos(angle_from_vertical)) * tan(HFOV/2)
+        horizontal_coverage = 2.0 * distance_along_viewing_ray * np.tan(horizontal_fov_rad / 2.0)
+        vertical_coverage = 2.0 * distance_along_viewing_ray * np.tan(vertical_fov_rad / 2.0)
+        grid_cell_size = min(horizontal_coverage, vertical_coverage)
 
         env_bounds_min_all = self.obs_dict["env_bounds_min"][:, 0:2]
         env_bounds_max_all = self.obs_dict["env_bounds_max"][:, 0:2]
@@ -107,10 +113,14 @@ class TrackFollowTask(NavigationTask):
             requires_grad=False,
         )
 
+        vertical_fov_deg = np.rad2deg(vertical_fov_rad)
+        fov_used = "HFOV" if horizontal_coverage < vertical_coverage else "VFOV"
         logger.info(
             f"Exploration grid: {self.exploration_grid_size_x}x{self.exploration_grid_size_y} = "
             f"{self.exploration_total_cells} cells, cell_size={grid_cell_size:.2f}m "
-            f"(based on FOV={self.camera_horizontal_fov_deg:.1f}°, altitude={desired_altitude:.2f}m, "
+            f"(HFOV={self.camera_horizontal_fov_deg:.1f}°={horizontal_coverage:.2f}m, "
+            f"VFOV={vertical_fov_deg:.1f}°={vertical_coverage:.2f}m, using {fov_used}, "
+            f"alt={desired_altitude:.2f}m, pitch={camera_pitch_deg:.1f}°)"
         )
 
         # Add privileged observations to observation space and task_obs
