@@ -15,8 +15,8 @@ class task_config:
     headless = True
     device = "cuda:0"
     observation_space_dim = 13 + 4 + 64  # root_state + action_dim _+ latent_dims
-    # privileged_observation_space_dim = 4  # vec_to_target (3D) + dist_to_target (1D) for privileged critic
-    privileged_observation_space_dim = 0  # vec_to_target (3D) + dist_to_target (1D) for privileged critic
+    privileged_observation_space_dim = 4  # vec_to_target (3D) + dist_to_target (1D) for privileged critic
+    # privileged_observation_space_dim = 0  # vec_to_target (3D) + dist_to_target (1D) for privileged critic
 
     action_space_dim = 4
     episode_len_steps = 1800  # real physics time for simulation is this value multiplied by sim.dt

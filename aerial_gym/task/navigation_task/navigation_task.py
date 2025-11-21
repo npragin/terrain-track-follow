@@ -10,6 +10,7 @@ from aerial_gym.utils.vae.vae_image_encoder import VAEImageEncoder
 
 logger = CustomLogger("navigation_task")
 
+
 def dict_to_class(dict):
     return type("ClassFromDict", (object,), dict)
 
@@ -367,7 +368,7 @@ class NavigationTask(BaseTask):
         self.pos_error_vehicle_frame[:] = quat_rotate_inverse(
             robot_vehicle_orientation, (target_position - robot_position)
         )
-        
+
         return compute_reward(
             self.pos_error_vehicle_frame,
             self.pos_error_vehicle_frame_prev,
@@ -390,6 +391,7 @@ def exponential_penalty_function(magnitude: float, exponent: float, value: torch
     """Exponential reward function"""
     return magnitude * (torch.exp(-(value * value) * exponent) - 1.0)
 
+
 @torch.jit.script
 def compute_reward(
     pos_error,
@@ -400,7 +402,7 @@ def compute_reward(
     curriculum_progress_fraction,
     parameter_dict,
 ):
-    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, float, Dict[str, Tensor]) -> Tuple[Tensor, Tensor]
+    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, float, Dict[str, Tensor]) -> Tuple[Tensor, Tensor]
     MULTIPLICATION_FACTOR_REWARD = 1.0 + (2.0) * curriculum_progress_fraction
     dist = torch.norm(pos_error, dim=1)
     prev_dist_to_goal = torch.norm(prev_pos_error, dim=1)
@@ -423,7 +425,7 @@ def compute_reward(
     )
 
     distance_from_goal_reward = (20.0 - dist) / 20.0
-    
+
     action_diff = action - prev_action
     x_diff_penalty = exponential_penalty_function(
         parameter_dict["x_action_diff_penalty_magnitude"],
@@ -464,7 +466,7 @@ def compute_reward(
     # combined reward
     reward = (
         MULTIPLICATION_FACTOR_REWARD
-        * (pos_reward + very_close_to_goal_reward + getting_closer_reward + distance_from_goal_reward + yaw_alignment_reward)
+        * (pos_reward + very_close_to_goal_reward + getting_closer_reward + distance_from_goal_reward)
         + total_action_penalty
     )
 

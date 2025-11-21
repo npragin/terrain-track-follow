@@ -9,8 +9,11 @@ params:
   load_checkpoint: False
 
   network:
-    name: actor_critic
-    separate: False
+    # name: actor_critic
+    # separate: False
+    name: asymmetric_actor_critic
+    separate: True
+    actor_obs_dim: 81  # Actor uses first 81 dims (observations), critic uses all 85 dims (observations + privileged)
     space:
       continuous:
         mu_activation: None
@@ -65,7 +68,7 @@ params:
     critic_coef: 2
     normalize_input: True
     bounds_loss_coef: 0.0001
-    max_epochs: 500
+    max_epochs: 50000
     normalize_value: True
     use_diagnostics: True
     value_bootstrap: True
