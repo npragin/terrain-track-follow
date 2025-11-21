@@ -1,5 +1,5 @@
 from aerial_gym.config.asset_config.env_object_config import TARGET_SEMANTIC_ID
-from aerial_gym.task.navigation_task.navigation_task import NavigationTask
+from aerial_gym.task.navigation_task.navigation_task import NavigationTask, exponential_reward_function
 from aerial_gym.utils.logging import CustomLogger
 
 logger = CustomLogger(__name__)
@@ -583,8 +583,10 @@ class TrackFollowTask(NavigationTask):
         altitude_error = torch.abs(altitude_above_terrain - desired_altitude)
 
         # Compute exponential reward based on altitude error
-        altitude_reward_value = self.task_config.reward_parameters["altitude_reward_magnitude"] * torch.exp(
-            -(altitude_error * altitude_error) * self.task_config.reward_parameters["altitude_reward_exponent"]
+        altitude_reward_value = exponential_reward_function(
+            self.task_config.reward_parameters["altitude_reward_magnitude"],
+            self.task_config.reward_parameters["altitude_reward_exponent"],
+            altitude_error,
         )
 
         # Target is considered "visible" if actually visible OR still in grace period
@@ -660,14 +662,57 @@ class TrackFollowTask(NavigationTask):
 
         return exploration_reward
 
+    def compute_yaw_alignment_reward(self, obs_dict, crashes):
+        """
+        Compute raw yaw alignment reward (without crash handling and without multiplication factor).
+        The multiplication factor is applied to all track_follow rewards together.
+        """
+        robot_position = obs_dict["robot_position"]
+        target_position = self.target_position
+        robot_orientation = obs_dict["robot_orientation"]
+
+        # Compute yaw error: desired yaw angle to face target
+        vec_to_target = target_position - robot_position
+        desired_yaw = torch.atan2(vec_to_target[:, 1], vec_to_target[:, 0])
+        current_yaw = ssa(get_euler_xyz_tensor(robot_orientation))[:, 2]
+        yaw_error = ssa(desired_yaw - current_yaw)
+
+        # Yaw alignment reward: exponential reward based on yaw error
+        yaw_alignment_reward = exponential_reward_function(
+            self.task_config.reward_parameters["yaw_alignment_reward_magnitude"],
+            self.task_config.reward_parameters["yaw_alignment_reward_exponent"],
+            yaw_error,
+        )
+
+        # Zero out reward when crashed
+        yaw_alignment_reward = torch.where(
+            ~crashes,
+            torch.where(
+                self.grace_period_counter > 0,  # Max out reward when in grace period (doesn't interfere with tracking)
+                self.task_config.reward_parameters["yaw_alignment_reward_magnitude"],
+                yaw_alignment_reward,
+            ),
+            torch.zeros((self.sim_env.num_envs,), device=self.device),  # Zero reward if crashed
+        )
+        return yaw_alignment_reward
+
     def compute_track_follow_rewards(self, obs_dict, crashes):
         """
         Compute additional rewards for track follow task.
+        All rewards are scaled by the curriculum multiplication factor.
         """
         visibility_reward = self.compute_target_visibility_reward(crashes)
         altitude_reward = self.compute_altitude_reward(obs_dict, crashes)
         exploration_reward = self.compute_exploration_reward(obs_dict, crashes)
-        return visibility_reward + altitude_reward + exploration_reward
+        yaw_alignment_reward = self.compute_yaw_alignment_reward(obs_dict, crashes)
+
+        # Apply curriculum multiplication factor to all track_follow rewards
+        MULTIPLICATION_FACTOR_REWARD = 1.0 + (2.0) * self.curriculum_progress_fraction
+        total_track_follow_rewards = (
+            visibility_reward + altitude_reward + exploration_reward + yaw_alignment_reward
+        ) * MULTIPLICATION_FACTOR_REWARD
+
+        return total_track_follow_rewards
 
     def compute_rewards_and_crashes(self, obs_dict):
         """Override parent to add track-follow rewards and bounds violation checks."""

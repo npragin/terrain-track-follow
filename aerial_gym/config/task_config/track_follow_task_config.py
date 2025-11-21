@@ -36,10 +36,10 @@ class task_config:
         "x_action_diff_penalty_exponent": 3.333,
         "z_action_diff_penalty_magnitude": 0.8,
         "z_action_diff_penalty_exponent": 5.0,
-        "yawrate_action_diff_penalty_magnitude": 0.8,
-        "yawrate_action_diff_penalty_exponent": 3.33,
+        "yawrate_action_diff_penalty_magnitude": 3,
+        "yawrate_action_diff_penalty_exponent": 1.0,
         "collision_penalty": -100.0,
-        "target_visibility_reward": 5.0,
+        "target_visibility_reward": 2.0,
         "target_visibility_grace_period_frames": 50,  # NOTE: This depends on dt
         # Use during search phase
         "altitude_reward_magnitude": 6.0,
