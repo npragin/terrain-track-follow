@@ -231,8 +231,8 @@ class tree_asset_params(asset_state_params):
     collision_mask = 1  # objects with the same collision mask will not collide
 
     min_state_ratio = [
-        0.1,  # X position: 10% to 90% of bounds
-        0.1,  # Y position: 10% to 90% of bounds
+        0.0,  # X position: 0% to 100% of bounds (spawns at edges)
+        0.0,  # Y position: 0% to 100% of bounds (spawns at edges)
         0.0,  # Z position: Ground level (adjusted by terrain)
         0,  # Roll
         -np.pi / 20.0,  # Pitch: ±9° from vertical
@@ -246,8 +246,8 @@ class tree_asset_params(asset_state_params):
         0.0,  # Angular velocities
     ]
     max_state_ratio = [
-        0.9,  # X position
-        0.9,  # Y position
+        1.0,  # X position
+        1.0,  # Y position
         0.0,  # Z position
         0,  # Roll
         np.pi / 20.0,  # Pitch
