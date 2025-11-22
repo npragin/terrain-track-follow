@@ -52,8 +52,6 @@ class TrackFollowTask(NavigationTask):
     def __init__(self, task_config, **kwargs):
         task_config.action_space_dim = 3
         task_config.curriculum.min_level = 36
-        logger.critical("Hardcoding number of envs to 16 if it is greater than that.")
-        task_config.num_envs = 16 if task_config.num_envs > 16 else task_config.num_envs
         super().__init__(task_config=task_config, **kwargs)
 
         # Create directory for saving segmentation visualizations
