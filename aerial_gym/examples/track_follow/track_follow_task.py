@@ -613,6 +613,49 @@ class TrackFollowTask(NavigationTask):
 
         return visibility_reward
 
+    def compute_bbox_size_reward(self, crashes):
+        """
+        Encourage maintaining optimal distance to target using bounding-box size.
+        Reward peaks when bbox area fraction is near desired target area.
+
+        Args:
+        crashes: Tensor indicating which environments have crashed.
+
+        Returns:
+            bbox_reward: Tensor of per-env rewards based on bounding-box size.
+        """
+        # Only valid where target is visible or in grace
+        target_visible_or_grace = self.cached_has_valid_bbox | (self.grace_period_counter > 0)
+
+        # Extract normalized bbox area
+        x_min = self.cached_target_bbox[:, 0]
+        y_min = self.cached_target_bbox[:, 1]
+        x_max = self.cached_target_bbox[:, 2]
+        y_max = self.cached_target_bbox[:, 3]
+
+        width = torch.clamp(x_max - x_min, min=0.0)
+        height = torch.clamp(y_max - y_min, min=0.0)
+        bbox_area = width * height  # already normalized to [0,1]
+
+        params = self.task_config.reward_parameters
+        s_target = params["bbox_target_area_ratio"]
+        tol = params["bbox_tolerance_ratio"]
+        w_bbox = params["bbox_size_reward_magnitude"]
+
+        # Compute Gaussian-like shaping around desired size:
+        # error = (s - s_target) / tol
+        error = (bbox_area - s_target) / (tol + 1e-6)
+        bbox_reward_raw = torch.exp(-0.5 * error * error)
+
+        # Mask:
+        bbox_reward = torch.where(
+            target_visible_or_grace & (~crashes),
+            w_bbox * bbox_reward_raw,
+            torch.zeros_like(bbox_reward_raw),
+        )
+
+        return bbox_reward
+
     def compute_altitude_reward(self, obs_dict, crashes):
         """
         Compute reward for maintaining optimal altitude above terrain.
@@ -779,11 +822,12 @@ class TrackFollowTask(NavigationTask):
         altitude_reward = self.compute_altitude_reward(obs_dict, crashes)
         exploration_reward = self.compute_exploration_reward(obs_dict, crashes)
         yaw_alignment_reward = self.compute_yaw_alignment_reward(obs_dict, crashes)
+        bbox_size_reward = self.compute_bbox_size_reward(crashes)
 
         # Apply curriculum multiplication factor to all track_follow rewards
         MULTIPLICATION_FACTOR_REWARD = 1.0 + (2.0) * self.curriculum_progress_fraction
         total_track_follow_rewards = (
-            visibility_reward + altitude_reward + exploration_reward + yaw_alignment_reward
+            visibility_reward + altitude_reward + exploration_reward + yaw_alignment_reward + bbox_size_reward
         ) * MULTIPLICATION_FACTOR_REWARD
 
         return total_track_follow_rewards
