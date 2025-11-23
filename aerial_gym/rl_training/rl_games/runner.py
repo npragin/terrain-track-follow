@@ -11,10 +11,11 @@ from gym import spaces
 from rl_games.common import env_configurations, vecenv
 
 from aerial_gym.registry.task_registry import task_registry
-from aerial_gym.utils.helpers import parse_arguments
 
 # Register custom asymmetric actor-critic network
 from aerial_gym.rl_training.rl_games.asymmetric_actor_critic import register_asymmetric_network
+from aerial_gym.utils.helpers import parse_arguments
+
 register_asymmetric_network()
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
@@ -22,18 +23,135 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 # warnings.filterwarnings("error")
 
 
+class EpisodeStatsWrapper(gym.Wrapper):
+    def __init__(self, env, log_interval_episodes=1):
+        super().__init__(env)
+        self.log_interval_episodes = log_interval_episodes
+        self.total_successes = 0
+        self.total_truncations = 0
+        self.total_terminations = 0
+        self.total_episodes = 0
+        self.env_steps = 0
+        self.prev_dones = None
+        self.pending_episode_completions = None
+        self.num_envs = None
+
+    def reset(self, **kwargs):
+        observations = super().reset(**kwargs)
+        if self.num_envs is None:
+            default_num_envs = 1
+            if hasattr(self.env, "task_config"):
+                default_num_envs = getattr(self.env.task_config, "num_envs", 1)
+            self.num_envs = getattr(self.env, "num_envs", default_num_envs)
+
+        if self.prev_dones is None:
+            device = "cpu"
+            if isinstance(observations, torch.Tensor):
+                device = observations.device
+            elif isinstance(observations, dict):
+                for val in observations.values():
+                    if isinstance(val, torch.Tensor):
+                        device = val.device
+                        break
+            self.prev_dones = torch.zeros(self.num_envs, dtype=torch.bool, device=device)
+
+        return observations
+
+    def step(self, action):
+        observations, rewards, terminated, truncated, infos = super().step(action)
+        self.env_steps += 1
+
+        if not isinstance(terminated, torch.Tensor):
+            device = (
+                truncated.device
+                if isinstance(truncated, torch.Tensor)
+                else (self.prev_dones.device if self.prev_dones is not None else "cpu")
+            )
+            terminated = torch.tensor(terminated, dtype=torch.bool, device=device)
+        if not isinstance(truncated, torch.Tensor):
+            device = (
+                terminated.device
+                if isinstance(terminated, torch.Tensor)
+                else (self.prev_dones.device if self.prev_dones is not None else "cpu")
+            )
+            truncated = torch.tensor(truncated, dtype=torch.bool, device=device)
+
+        dones = terminated | truncated
+
+        if self.pending_episode_completions is not None:
+            if isinstance(infos, dict) and "successes" in infos:
+                successes_tensor = infos["successes"]
+                if isinstance(successes_tensor, torch.Tensor):
+                    new_successes = (successes_tensor[self.pending_episode_completions] > 0).sum().item()
+                    self.total_successes += new_successes
+
+            self.pending_episode_completions = None
+
+        if self.prev_dones is not None:
+            if self.prev_dones.device != dones.device:
+                self.prev_dones = self.prev_dones.to(dones.device)
+            newly_done = ~self.prev_dones & dones
+
+            if newly_done.any():
+                new_truncations = truncated[newly_done].sum().item()
+                new_terminations = terminated[newly_done].sum().item()
+                self.total_truncations += new_truncations
+                self.total_terminations += new_terminations
+                num_new_episodes = newly_done.sum().item()
+                self.total_episodes += num_new_episodes
+
+                self.pending_episode_completions = newly_done.clone()
+
+                prev_total = self.total_episodes - num_new_episodes
+                prev_interval = prev_total // self.log_interval_episodes
+                curr_interval = self.total_episodes // self.log_interval_episodes
+                if (
+                    prev_interval != curr_interval or self.total_episodes == self.log_interval_episodes
+                ) and self.total_episodes > 0:
+                    self._log_stats()
+
+        self.prev_dones = dones.clone()
+        return observations, rewards, terminated, truncated, infos
+
+    def _log_stats(self):
+        import wandb
+
+        if wandb.run is None:
+            return
+
+        success_rate = self.total_successes / self.total_episodes if self.total_episodes > 0 else 0.0
+        truncation_rate = self.total_truncations / self.total_episodes if self.total_episodes > 0 else 0.0
+        termination_rate = self.total_terminations / self.total_episodes if self.total_episodes > 0 else 0.0
+
+        metrics = {
+            "success_rate/step": success_rate,
+            "truncation_rate/step": truncation_rate,
+            "termination_rate/step": termination_rate,
+        }
+
+        if hasattr(self.env, "curriculum_progress_fraction"):
+            curriculum_fraction = self.env.curriculum_progress_fraction
+            if isinstance(curriculum_fraction, torch.Tensor):
+                if curriculum_fraction.numel() == 1:
+                    curriculum_fraction = curriculum_fraction.item()
+                else:
+                    curriculum_fraction = curriculum_fraction[0].item()
+            metrics["curriculum_fraction/step"] = curriculum_fraction
+
+        wandb.log(metrics, step=self.env_steps)
+
+
 class ExtractObsWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         # Check if environment has privileged observations for asymmetric actor-critic
-        self.has_privileged_obs = hasattr(env, 'task_config') and \
-                                  env.task_config.privileged_observation_space_dim > 0
-        self.obs_dim = env.task_config.observation_space_dim if hasattr(env, 'task_config') else None
-        self.priv_dim = env.task_config.privileged_observation_space_dim if hasattr(env, 'task_config') else 0
+        self.has_privileged_obs = hasattr(env, "task_config") and env.task_config.privileged_observation_space_dim > 0
+        self.obs_dim = env.task_config.observation_space_dim if hasattr(env, "task_config") else None
+        self.priv_dim = env.task_config.privileged_observation_space_dim if hasattr(env, "task_config") else 0
 
     def reset(self, **kwargs):
         observations, *_ = super().reset(**kwargs)
-        
+
         # For asymmetric actor-critic with separate=True:
         # Concatenate all observations and let the network split them internally
         if self.has_privileged_obs and "priviliged_obs" in observations:
@@ -65,6 +183,7 @@ class ExtractObsWrapper(gym.Wrapper):
 class AERIALRLGPUEnv(vecenv.IVecEnv):
     def __init__(self, config_name, num_actors, **kwargs):
         self.env = env_configurations.configurations[config_name]["env_creator"](**kwargs)
+        self.env = EpisodeStatsWrapper(self.env)
         self.env = ExtractObsWrapper(self.env)
 
     def step(self, actions):
@@ -85,12 +204,13 @@ class AERIALRLGPUEnv(vecenv.IVecEnv):
             -np.ones(self.env.task_config.action_space_dim),
             np.ones(self.env.task_config.action_space_dim),
         )
-        
+
         # For asymmetric actor-critic: observation_space is the FULL concatenated size
         # The custom network will split it internally (actor uses [:81], critic uses all 85)
-        if hasattr(self.env, 'task_config') and self.env.task_config.privileged_observation_space_dim > 0:
-            full_dim = self.env.task_config.observation_space_dim + \
-                      self.env.task_config.privileged_observation_space_dim
+        if hasattr(self.env, "task_config") and self.env.task_config.privileged_observation_space_dim > 0:
+            full_dim = (
+                self.env.task_config.observation_space_dim + self.env.task_config.privileged_observation_space_dim
+            )
             info["observation_space"] = spaces.Box(
                 np.ones(full_dim) * -np.inf,
                 np.ones(full_dim) * np.inf,
@@ -105,7 +225,7 @@ class AERIALRLGPUEnv(vecenv.IVecEnv):
                 np.ones(self.env.task_config.observation_space_dim) * np.inf,
             )
             print(info["action_space"], info["observation_space"])
-        
+
         return info
 
 
