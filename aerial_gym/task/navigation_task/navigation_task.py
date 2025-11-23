@@ -369,7 +369,18 @@ class NavigationTask(BaseTask):
             robot_vehicle_orientation, (target_position - robot_position)
         )
 
-        return compute_reward(
+        (
+            reward,
+            crashes,
+            pos_reward,
+            very_close_to_goal_reward,
+            getting_closer_reward,
+            distance_from_goal_reward,
+            action_diff_penalty,
+            absolute_action_penalty,
+            total_action_penalty,
+            collision_penalty,
+        ) = compute_reward(
             self.pos_error_vehicle_frame,
             self.pos_error_vehicle_frame_prev,
             obs_dict["crashes"],
@@ -378,6 +389,23 @@ class NavigationTask(BaseTask):
             self.curriculum_progress_fraction,
             self.task_config.reward_parameters,
         )
+
+        if "reward_components" not in self.infos:
+            self.infos["reward_components"] = {}
+        self.infos["reward_components"].update(
+            {
+                "pos_reward": pos_reward,
+                "very_close_to_goal_reward": very_close_to_goal_reward,
+                "getting_closer_reward": getting_closer_reward,
+                "distance_from_goal_reward": distance_from_goal_reward,
+                "action_diff_penalty": action_diff_penalty,
+                "absolute_action_penalty": absolute_action_penalty,
+                "total_action_penalty": total_action_penalty,
+                "collision_penalty": collision_penalty,
+            }
+        )
+
+        return reward, crashes
 
 
 @torch.jit.script
@@ -402,7 +430,7 @@ def compute_reward(
     curriculum_progress_fraction,
     parameter_dict,
 ):
-    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, float, Dict[str, Tensor]) -> Tuple[Tensor, Tensor]
+    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, float, Dict[str, Tensor]) -> tuple
     MULTIPLICATION_FACTOR_REWARD = 1.0 + (2.0) * curriculum_progress_fraction
     dist = torch.norm(pos_error, dim=1)
     prev_dist_to_goal = torch.norm(prev_pos_error, dim=1)
@@ -470,9 +498,25 @@ def compute_reward(
         + total_action_penalty
     )
 
+    collision_penalty_applied = torch.where(
+        crashes > 0,
+        parameter_dict["collision_penalty"] * torch.ones_like(reward),
+        torch.zeros_like(reward),
+    )
     reward[:] = torch.where(
         crashes > 0,
         parameter_dict["collision_penalty"] * torch.ones_like(reward),
         reward,
     )
-    return reward, crashes
+    return (
+        reward,
+        crashes,
+        pos_reward,
+        very_close_to_goal_reward,
+        getting_closer_reward,
+        distance_from_goal_reward,
+        action_diff_penalty,
+        absolute_action_penalty,
+        total_action_penalty,
+        collision_penalty_applied,
+    )

@@ -623,6 +623,7 @@ class TrackFollowTask(NavigationTask):
 
         Returns:
             bbox_reward: Tensor of per-env rewards based on bounding-box size.
+
         """
         # Only valid where target is visible or in grace
         target_visible_or_grace = self.cached_has_valid_bbox | (self.grace_period_counter > 0)
@@ -823,6 +824,18 @@ class TrackFollowTask(NavigationTask):
         exploration_reward = self.compute_exploration_reward(obs_dict, crashes)
         yaw_alignment_reward = self.compute_yaw_alignment_reward(obs_dict, crashes)
         bbox_size_reward = self.compute_bbox_size_reward(crashes)
+
+        if "reward_components" not in self.infos:
+            self.infos["reward_components"] = {}
+        self.infos["reward_components"].update(
+            {
+                "visibility_reward": visibility_reward,
+                "altitude_reward": altitude_reward,
+                "exploration_reward": exploration_reward,
+                "yaw_alignment_reward": yaw_alignment_reward,
+                "bbox_size_reward": bbox_size_reward,
+            }
+        )
 
         # Apply curriculum multiplication factor to all track_follow rewards
         MULTIPLICATION_FACTOR_REWARD = 1.0 + (2.0) * self.curriculum_progress_fraction

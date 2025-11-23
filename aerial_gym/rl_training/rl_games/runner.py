@@ -84,6 +84,17 @@ class EpisodeStatsWrapper(gym.Wrapper):
 
         dones = terminated | truncated
 
+        if isinstance(infos, dict) and "reward_components" in infos:
+            import wandb
+
+            if wandb.run is not None:
+                reward_metrics = {}
+                for component_name, component_tensor in infos["reward_components"].items():
+                    if isinstance(component_tensor, torch.Tensor):
+                        reward_metrics[f"reward_components/{component_name}/step"] = component_tensor.mean().item()
+                if reward_metrics:
+                    wandb.log(reward_metrics, step=self.env_steps)
+
         if self.prev_dones is not None:
             if self.prev_dones.device != dones.device:
                 self.prev_dones = self.prev_dones.to(dones.device)
