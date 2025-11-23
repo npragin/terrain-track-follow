@@ -1,6 +1,7 @@
 # isaacgym must be imported before torch
 import distutils
 import os
+from enum import IntEnum
 
 import gym
 import isaacgym  # noqa: F401
@@ -23,37 +24,42 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 # warnings.filterwarnings("error")
 
 
+class TerminationState(IntEnum):
+    NO_TERMINATION = 0
+    SUCCESS = 1
+    TERMINATION = 2
+    TRUNCATION = 3
+
+
 class EpisodeStatsWrapper(gym.Wrapper):
-    def __init__(self, env, log_interval_episodes=1):
+    def __init__(self, env):
         super().__init__(env)
-        self.log_interval_episodes = log_interval_episodes
-        self.total_successes = 0
-        self.total_truncations = 0
-        self.total_terminations = 0
-        self.total_episodes = 0
         self.env_steps = 0
         self.prev_dones = None
-        self.pending_episode_completions = None
+        self.env_termination_states = None
         self.num_envs = None
 
     def reset(self, **kwargs):
         observations = super().reset(**kwargs)
         if self.num_envs is None:
-            default_num_envs = 1
-            if hasattr(self.env, "task_config"):
-                default_num_envs = getattr(self.env.task_config, "num_envs", 1)
-            self.num_envs = getattr(self.env, "num_envs", default_num_envs)
+            self.num_envs = self.env.num_envs
+
+        device = "cpu"
+        if isinstance(observations, torch.Tensor):
+            device = observations.device
+        elif isinstance(observations, dict):
+            for val in observations.values():
+                if isinstance(val, torch.Tensor):
+                    device = val.device
+                    break
 
         if self.prev_dones is None:
-            device = "cpu"
-            if isinstance(observations, torch.Tensor):
-                device = observations.device
-            elif isinstance(observations, dict):
-                for val in observations.values():
-                    if isinstance(val, torch.Tensor):
-                        device = val.device
-                        break
             self.prev_dones = torch.zeros(self.num_envs, dtype=torch.bool, device=device)
+
+        if self.env_termination_states is None:
+            self.env_termination_states = torch.full(
+                (self.num_envs,), TerminationState.NO_TERMINATION, dtype=torch.int32, device=device
+            )
 
         return observations
 
@@ -71,44 +77,41 @@ class EpisodeStatsWrapper(gym.Wrapper):
         if not isinstance(truncated, torch.Tensor):
             device = (
                 terminated.device
-                if isinstance(terminated, torch.Tensor)
+                if isinstance(truncated, torch.Tensor)
                 else (self.prev_dones.device if self.prev_dones is not None else "cpu")
             )
             truncated = torch.tensor(truncated, dtype=torch.bool, device=device)
 
         dones = terminated | truncated
 
-        if self.pending_episode_completions is not None:
-            if isinstance(infos, dict) and "successes" in infos:
-                successes_tensor = infos["successes"]
-                if isinstance(successes_tensor, torch.Tensor):
-                    new_successes = (successes_tensor[self.pending_episode_completions] > 0).sum().item()
-                    self.total_successes += new_successes
-
-            self.pending_episode_completions = None
-
         if self.prev_dones is not None:
             if self.prev_dones.device != dones.device:
                 self.prev_dones = self.prev_dones.to(dones.device)
+                if self.env_termination_states.device != dones.device:
+                    self.env_termination_states = self.env_termination_states.to(dones.device)
             newly_done = ~self.prev_dones & dones
 
             if newly_done.any():
-                new_truncations = truncated[newly_done].sum().item()
-                new_terminations = terminated[newly_done].sum().item()
-                self.total_truncations += new_truncations
-                self.total_terminations += new_terminations
-                num_new_episodes = newly_done.sum().item()
-                self.total_episodes += num_new_episodes
+                successes_tensor = None
+                if isinstance(infos, dict) and "successes" in infos:
+                    successes_tensor = infos["successes"]
+                elif isinstance(self.env.infos, dict) and "successes" in self.env.infos:
+                    successes_tensor = self.env.infos["successes"]
 
-                self.pending_episode_completions = newly_done.clone()
+                for env_id in torch.where(newly_done)[0]:
+                    env_id = env_id.item()
+                    if (
+                        successes_tensor is not None
+                        and isinstance(successes_tensor, torch.Tensor)
+                        and successes_tensor[env_id]
+                    ):
+                        self.env_termination_states[env_id] = TerminationState.SUCCESS
+                    elif terminated[env_id]:
+                        self.env_termination_states[env_id] = TerminationState.TERMINATION
+                    elif truncated[env_id]:
+                        self.env_termination_states[env_id] = TerminationState.TRUNCATION
 
-                prev_total = self.total_episodes - num_new_episodes
-                prev_interval = prev_total // self.log_interval_episodes
-                curr_interval = self.total_episodes // self.log_interval_episodes
-                if (
-                    prev_interval != curr_interval or self.total_episodes == self.log_interval_episodes
-                ) and self.total_episodes > 0:
-                    self._log_stats()
+                self._log_stats()
 
         self.prev_dones = dones.clone()
         return observations, rewards, terminated, truncated, infos
@@ -119,9 +122,19 @@ class EpisodeStatsWrapper(gym.Wrapper):
         if wandb.run is None:
             return
 
-        success_rate = self.total_successes / self.total_episodes if self.total_episodes > 0 else 0.0
-        truncation_rate = self.total_truncations / self.total_episodes if self.total_episodes > 0 else 0.0
-        termination_rate = self.total_terminations / self.total_episodes if self.total_episodes > 0 else 0.0
+        success_count = (self.env_termination_states == TerminationState.SUCCESS).sum().item()
+        termination_count = (self.env_termination_states == TerminationState.TERMINATION).sum().item()
+        truncation_count = (self.env_termination_states == TerminationState.TRUNCATION).sum().item()
+        total_terminated = success_count + termination_count + truncation_count
+
+        if total_terminated > 0:
+            success_rate = success_count / total_terminated
+            truncation_rate = truncation_count / total_terminated
+            termination_rate = termination_count / total_terminated
+        else:
+            success_rate = 0.0
+            truncation_rate = 0.0
+            termination_rate = 0.0
 
         metrics = {
             "success_rate/step": success_rate,
@@ -129,14 +142,13 @@ class EpisodeStatsWrapper(gym.Wrapper):
             "termination_rate/step": termination_rate,
         }
 
-        if hasattr(self.env, "curriculum_progress_fraction"):
-            curriculum_fraction = self.env.curriculum_progress_fraction
-            if isinstance(curriculum_fraction, torch.Tensor):
-                if curriculum_fraction.numel() == 1:
-                    curriculum_fraction = curriculum_fraction.item()
-                else:
-                    curriculum_fraction = curriculum_fraction[0].item()
-            metrics["curriculum_fraction/step"] = curriculum_fraction
+        curriculum_fraction = self.env.curriculum_progress_fraction
+        if isinstance(curriculum_fraction, torch.Tensor):
+            if curriculum_fraction.numel() == 1:
+                curriculum_fraction = curriculum_fraction.item()
+            else:
+                curriculum_fraction = curriculum_fraction[0].item()
+        metrics["curriculum_fraction/step"] = curriculum_fraction
 
         wandb.log(metrics, step=self.env_steps)
 
