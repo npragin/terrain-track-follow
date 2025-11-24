@@ -1019,17 +1019,14 @@ class TrackFollowTask(NavigationTask):
         return return_tuple
 
     def process_obs_for_task(self):
-        # Use cached target bounding box (extracted once per step in step() method)
-        # This replaces vector to target (3D) + distance (1D) with bounding box (4D)
         self.task_obs["observations"][:, 0:4] = self.cached_target_bbox
-
         euler_angles = ssa(get_euler_xyz_tensor(self.obs_dict["robot_vehicle_orientation"]))
-        self.task_obs["observations"][:, 4:6] = euler_angles[:, 0:2]
-        self.task_obs["observations"][:, 6] = 0.0
-        self.task_obs["observations"][:, 7:10] = self.obs_dict["robot_body_linvel"]
-        self.task_obs["observations"][:, 10:13] = self.obs_dict["robot_body_angvel"]
-        self.task_obs["observations"][:, 13:17] = self.obs_dict["robot_actions"]
-        self.task_obs["observations"][:, 17:81] = self.image_latents
+        self.task_obs["observations"][:, 4:7] = euler_angles
+        self.task_obs["observations"][:, 7] = self.obs_dict["robot_position"][:, 2]
+        self.task_obs["observations"][:, 8:11] = self.obs_dict["robot_body_linvel"]
+        self.task_obs["observations"][:, 11:14] = self.obs_dict["robot_body_angvel"]
+        self.task_obs["observations"][:, 14:18] = self.obs_dict["robot_actions"]
+        self.task_obs["observations"][:, 18:82] = self.image_latents
 
         # Compute privileged observations for critic: vec_to_target (3D) and dist_to_target (1D)
         if self.task_config.privileged_observation_space_dim > 0 and "priviliged_obs" in self.task_obs:
