@@ -81,8 +81,8 @@ class task_config:
         return_sampled_latent = True
 
     class curriculum:
-        min_level = 15
-        max_level = 50
+        min_level = 1
+        max_level = 100
         check_after_log_instances = 2048
         increase_step = 2
         decrease_step = 1
@@ -90,7 +90,7 @@ class task_config:
         success_rate_for_decrease = 0.6
 
         enable_bounds_termination = True
-        episode_len_fraction_min = 0.1
+        episode_len_fraction_min = 0.01
         env_size_scale = 1.0  # Scaling factor for computed environment size
 
         def update_curriculim_level(self, success_rate, current_level):
