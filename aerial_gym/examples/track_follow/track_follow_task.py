@@ -82,6 +82,9 @@ class TrackFollowTask(NavigationTask):
             (self.sim_env.num_envs,), device=self.device, dtype=torch.bool, requires_grad=False
         )
 
+        # Cache for previous actions (needed because robot_prev_actions gets updated during sim_env.step())
+        self.cached_prev_actions = torch.zeros((self.sim_env.num_envs, 4), device=self.device, requires_grad=False)
+
         # Grace period counter: tracks remaining frames of "target visible" rewards after losing visual contact
         # Resets to grace_period_frames when target becomes visible again
         # Initialized to zero (no grace period until target is first seen)
@@ -847,7 +850,17 @@ class TrackFollowTask(NavigationTask):
 
     def compute_rewards_and_crashes(self, obs_dict):
         """Override parent to add track-follow rewards and bounds violation checks."""
+        # Temporarily restore cached previous actions for reward computation
+        # because robot_prev_actions was updated during sim_env.step()
+        if "robot_prev_actions" in obs_dict:
+            original_prev_actions = obs_dict["robot_prev_actions"].clone()
+            obs_dict["robot_prev_actions"][:] = self.cached_prev_actions
+
         base_rewards, crashes = super().compute_rewards_and_crashes(obs_dict)
+
+        # Restore the updated prev_actions after reward computation
+        if "robot_prev_actions" in obs_dict:
+            obs_dict["robot_prev_actions"][:] = original_prev_actions
 
         if self.enable_bounds_termination:
             out_of_bounds = self.check_bounds_violation(obs_dict["robot_position"])
@@ -897,6 +910,7 @@ class TrackFollowTask(NavigationTask):
         self.cached_has_valid_bbox[env_ids] = False
         self.grace_period_counter[env_ids] = 0
         self.exploration_visited_grid[env_ids] = False
+        self.cached_prev_actions[env_ids] = 0.0
 
         if len(env_ids) > 0 and len(env_ids) <= 4:
             env_ids_list = env_ids.cpu().numpy().tolist() if isinstance(env_ids, torch.Tensor) else env_ids
@@ -909,6 +923,12 @@ class TrackFollowTask(NavigationTask):
         """Override step to update target position and enforce curriculum bounds."""
         transformed_action = self.action_transformation_function(actions)
         logger.debug(f"raw_action: {actions[0]}, transformed action: {transformed_action[0]}")
+
+        # Cache previous actions BEFORE sim_env.step() updates them
+        # This is needed because robot_prev_actions gets updated during sim_env.step()
+        # via robot_manager.pre_physics_step(), which happens before we compute rewards
+        if "robot_prev_actions" in self.obs_dict:
+            self.cached_prev_actions[:] = self.obs_dict["robot_prev_actions"]
 
         self.sim_env.step(actions=transformed_action)
         self.update_target_position_from_asset()
