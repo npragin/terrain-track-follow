@@ -452,7 +452,7 @@ def compute_reward(
         2.0 * parameter_dict["getting_closer_reward_multiplier"] * getting_closer,
     )
 
-    distance_from_goal_reward = (20.0 - dist) / 20.0
+    distance_from_goal_reward = (20.0 - dist) / 20.0 * parameter_dict["distance_from_goal_reward_multiplier"]
 
     action_diff = action - prev_action
     x_diff_penalty = exponential_penalty_function(

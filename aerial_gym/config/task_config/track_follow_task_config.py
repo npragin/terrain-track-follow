@@ -65,6 +65,7 @@ class task_config:
         "z_absolute_action_penalty_exponent": 0.0,
         "yawrate_absolute_action_penalty_magnitude": 0.0,
         "yawrate_absolute_action_penalty_exponent": 0.0,
+        "distance_from_goal_reward_multiplier": 0.0,
     }
 
     class vae_config:
