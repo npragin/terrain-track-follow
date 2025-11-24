@@ -51,8 +51,8 @@ class task_config:
         "yaw_alignment_reward_magnitude": 1.0,
         "yaw_alignment_reward_exponent": 1.0,
         "bbox_size_reward_magnitude": 1.0,
-        "bbox_target_area_ratio": 0.025,
-        "bbox_tolerance_ratio": 0.015,
+        "bbox_max_area_ratio": 0.25,
+        "bbox_exponential_rate": 2.3,
         # Don't use
         "pos_reward_magnitude": 0.0,
         "pos_reward_exponent": 0.0,

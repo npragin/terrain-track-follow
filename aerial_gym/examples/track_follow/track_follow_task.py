@@ -619,7 +619,7 @@ class TrackFollowTask(NavigationTask):
     def compute_bbox_size_reward(self, crashes):
         """
         Encourage maintaining optimal distance to target using bounding-box size.
-        Reward peaks when bbox area fraction is near desired target area.
+        Reward increases exponentially with bbox area
 
         Args:
         crashes: Tensor indicating which environments have crashed.
@@ -642,16 +642,15 @@ class TrackFollowTask(NavigationTask):
         bbox_area = width * height  # already normalized to [0,1]
 
         params = self.task_config.reward_parameters
-        s_target = params["bbox_target_area_ratio"]
-        tol = params["bbox_tolerance_ratio"]
         w_bbox = params["bbox_size_reward_magnitude"]
+        max_area = params["bbox_max_area_ratio"]
+        rate = params["bbox_exponential_rate"]
 
-        # Compute Gaussian-like shaping around desired size:
-        # error = (s - s_target) / tol
-        error = (bbox_area - s_target) / (tol + 1e-6)
-        bbox_reward_raw = torch.exp(-0.5 * error * error)
+        clamped_area = torch.clamp(bbox_area, max=max_area)
 
-        # Mask:
+        normalized_area = clamped_area / (max_area + 1e-6)  # Normalize to [0, 1]
+        bbox_reward_raw = 1.0 - torch.exp(-rate * normalized_area)
+
         bbox_reward = torch.where(
             target_visible_or_grace & (~crashes),
             w_bbox * bbox_reward_raw,
