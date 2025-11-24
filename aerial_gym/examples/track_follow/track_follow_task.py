@@ -109,7 +109,7 @@ class TrackFollowTask(NavigationTask):
             camera_pitch_deg = robot_cfg.sensor_config.camera_config.nominal_orientation_euler_deg[1]
         camera_pitch_rad = np.deg2rad(camera_pitch_deg)
 
-        desired_altitude = self.task_config.reward_parameters["desired_altitude_ratio"] * self.camera_max_range
+        desired_altitude = self.task_config.reward_parameters["min_desired_altitude_ratio"] * self.camera_max_range
         horizontal_fov_rad = np.deg2rad(self.camera_horizontal_fov_deg)
         vertical_fov_rad = 2.0 * np.arctan(np.tan(horizontal_fov_rad / 2.0) / aspect_ratio)
 
@@ -664,18 +664,22 @@ class TrackFollowTask(NavigationTask):
         Compute reward for maintaining optimal altitude above terrain.
 
         When target is NOT visible:
-            - Incentivizes flying at desired_altitude (80% of max camera range) above terrain
-            - Uses exponential reward that decays with distance from desired altitude
+            - If altitude is at or above min_desired_altitude_ratio, gives maximum reward
+            - Otherwise, uses exponential reward that decays with distance below min desired altitude
 
         When target IS visible:
             - Maxes out the reward so altitude doesn't interfere with target tracking
+
+        Penalty:
+            - If altitude is above camera_max_range and target is not visible (or in grace period),
+              applies a constant penalty
 
         Args:
             obs_dict: Dictionary containing robot observations
             crashes: Tensor indicating which environments have crashed
 
         Returns:
-            altitude_reward: Tensor of rewards for altitude maintenance
+            altitude_reward: Tensor of rewards for altitude maintenance (penalty is subtracted)
 
         """
         terrain_gen = self.sim_env.shared_terrain_generator
@@ -696,31 +700,41 @@ class TrackFollowTask(NavigationTask):
         terrain_offset = terrain_gen.amplitude / 2.0
         altitude_above_terrain = robot_positions[:, 2] - (terrain_heights + terrain_offset)
 
-        # Desired altitude based on camera max range
-        desired_altitude = self.task_config.reward_parameters["desired_altitude_ratio"] * self.camera_max_range
+        altitude_ratio = altitude_above_terrain / self.camera_max_range
+        min_desired_altitude_ratio = self.task_config.reward_parameters["min_desired_altitude_ratio"]
 
-        # Calculate altitude error
-        altitude_error = torch.abs(altitude_above_terrain - desired_altitude)
+        at_or_above_min = altitude_ratio >= min_desired_altitude_ratio
+        above_range = altitude_above_terrain > self.camera_max_range
+        altitude_above_range_penalty = self.task_config.reward_parameters["altitude_above_range_penalty"]
 
-        # Compute exponential reward based on altitude error
+        # Compute exponential reward based on altitude error (only applies when below min)
         altitude_reward_value = exponential_reward_function(
             self.task_config.reward_parameters["altitude_reward_magnitude"],
             self.task_config.reward_parameters["altitude_reward_exponent"],
-            altitude_error,
+            min_desired_altitude_ratio - altitude_ratio,
         )
 
         # Target is considered "visible" if actually visible OR still in grace period
         # Uses cached has_valid_bbox computed once per step
         target_visible_or_grace = self.cached_has_valid_bbox | (self.grace_period_counter > 0)
 
-        # Max out altitude reward when target visible (or in grace period) (doesn't interfere with tracking)
+        # Determine reward: max if at/above min OR target visible, otherwise use exponential
+        # Apply penalty if above range and target not visible (or in grace period)
         # Zero out reward when crashed (no reward for crashed environments)
         altitude_reward = torch.where(
             ~crashes,  # Not crashed
             torch.where(
                 target_visible_or_grace,  # Target visible or in grace period
                 self.task_config.reward_parameters["altitude_reward_magnitude"],  # Max reward
-                altitude_reward_value,  # Exponential reward based on altitude error
+                torch.where(
+                    at_or_above_min,  # At or above minimum desired altitude
+                    torch.where(
+                        above_range,  # Above camera range
+                        altitude_above_range_penalty,
+                        self.task_config.reward_parameters["altitude_reward_magnitude"],
+                    ),
+                    altitude_reward_value,
+                ),
             ),
             torch.zeros((self.sim_env.num_envs,), device=self.device),  # Zero reward if crashed
         )

@@ -40,17 +40,18 @@ class task_config:
         "yawrate_action_diff_penalty_magnitude": 3,
         "yawrate_action_diff_penalty_exponent": 1.0,
         "collision_penalty": -100.0,
-        "target_visibility_reward": 2.0,
+        "target_visibility_reward": 20.0,
         "target_visibility_grace_period_frames": 50,  # NOTE: This depends on dt
         # Use during search phase
-        "altitude_reward_magnitude": 6.0,
+        "altitude_reward_magnitude": 10.0,
         "altitude_reward_exponent": 0.05,
-        "desired_altitude_ratio": 0.8,
-        "exploration_reward_magnitude": 2.0,
+        "min_desired_altitude_ratio": 0.8,
+        "altitude_above_range_penalty": -10.0,  # Must be negative
+        "exploration_reward_magnitude": 15.0,
         # Use during track phase
         "yaw_alignment_reward_magnitude": 1.0,
         "yaw_alignment_reward_exponent": 1.0,
-        "bbox_size_reward_magnitude": 1.0,
+        "bbox_size_reward_magnitude": 20.0,
         "bbox_max_area_ratio": 0.25,
         "bbox_exponential_rate": 2.3,
         # Don't use
