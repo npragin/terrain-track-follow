@@ -158,7 +158,14 @@ class NavigationTask(BaseTask):
             ratio=target_ratio[env_ids],
         )
         self.sim_env.reset_idx(env_ids)
-        self.infos = {}
+        # Preserve episode-ending information (successes, timeouts, crashes) as these are
+        episode_ending_keys = ["successes", "timeouts", "crashes"]
+        if hasattr(self, "infos") and isinstance(self.infos, dict):
+            preserved_info = {k: self.infos.get(k) for k in episode_ending_keys if k in self.infos}
+            self.infos = {}
+            self.infos.update(preserved_info)
+        else:
+            self.infos = {}
         return
 
     def render(self):

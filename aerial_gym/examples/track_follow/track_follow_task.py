@@ -934,6 +934,7 @@ class TrackFollowTask(NavigationTask):
 
         # Update grace period counter
         grace_period_frames = self.task_config.reward_parameters["target_visibility_grace_period_frames"]
+        grace_period_active_before_update = self.grace_period_counter > 0
 
         # Reset counter to grace_period_frames when target becomes visible
         # Decrement counter when target not visible (but don't go below 0)
@@ -957,7 +958,7 @@ class TrackFollowTask(NavigationTask):
         )
 
         # Success criteria: Bounding box is valid or in grace period at timeout and no failure
-        has_active_or_recent_bbox = self.cached_has_valid_bbox | (self.grace_period_counter > 0)
+        has_active_or_recent_bbox = self.cached_has_valid_bbox | grace_period_active_before_update
         no_failures = self.terminations == 0
         successes = self.truncations * no_failures * has_active_or_recent_bbox
         timeouts = torch.where(self.truncations > 0, torch.logical_not(successes), torch.zeros_like(successes))
