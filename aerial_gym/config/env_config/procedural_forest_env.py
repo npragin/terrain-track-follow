@@ -33,8 +33,8 @@ class ProceduralForestEnvCfg:
         # Terrain starts at z=0 and extends up to terrain_amplitude
         lower_bound_min = [-50.0, -50.0, 0.0]
         lower_bound_max = [-50.0, -50.0, 0.0]
-        upper_bound_min = [50.0, 50.0, 30.0]
-        upper_bound_max = [50.0, 50.0, 30.0]
+        upper_bound_min = [50.0, 50.0, 40.0]
+        upper_bound_max = [50.0, 50.0, 40.0]
 
         # Tree density: trees per square meter (num_assets = tree_density * env_area)
         tree_density = 0.02
