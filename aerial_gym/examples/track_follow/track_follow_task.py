@@ -1,4 +1,5 @@
-from aerial_gym.config.asset_config.env_object_config import TARGET_SEMANTIC_ID
+from aerial_gym.config.asset_config.env_object_config import TARGET_SEMANTIC_ID, target_asset_params
+from aerial_gym.config.robot_config.lmf2_config import LMF2Cfg
 from aerial_gym.task.navigation_task.navigation_task import NavigationTask, exponential_reward_function
 from aerial_gym.utils.logging import CustomLogger
 
@@ -12,6 +13,7 @@ import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from PIL import Image
 
 from aerial_gym.utils.math import (
     get_euler_xyz_tensor,
@@ -84,6 +86,12 @@ class TrackFollowTask(NavigationTask):
 
         # Cache for previous actions (needed because robot_prev_actions gets updated during sim_env.step())
         self.cached_prev_actions = torch.zeros((self.sim_env.num_envs, 4), device=self.device, requires_grad=False)
+
+        # Track previous episode state to detect episode endings for wandb logging
+        self.prev_episode_done = torch.zeros((self.sim_env.num_envs,), device=self.device, dtype=torch.bool)
+
+        # Store segmentation frames for env 0 to create episode GIF
+        self.segmentation_frames_env0 = []
 
         # Grace period counter: tracks remaining frames of "target visible" rewards after losing visual contact
         # Resets to grace_period_frames when target becomes visible again
@@ -208,6 +216,22 @@ class TrackFollowTask(NavigationTask):
             f"drone_max_speed: {self.drone_max_speed:.2f} m/s, dt: {self.dt:.4f} s, "
             f"max_env_size: {self.max_env_size:.2f} m"
         )
+
+        # Store target config values for resampling
+        self.target_min_state_ratio_xyz = torch.tensor(
+            target_asset_params.min_state_ratio[0:3], device=self.device, requires_grad=False
+        )  # [x_ratio, y_ratio, z_ratio]
+        self.target_max_state_ratio_xyz = torch.tensor(
+            target_asset_params.max_state_ratio[0:3], device=self.device, requires_grad=False
+        )  # [x_ratio, y_ratio, z_ratio]
+
+        # Store LMF2 config init_state values for resampling (explicitly use LMF2Cfg instead of robot config)
+        self.lmf2_min_init_state_xyz = torch.tensor(
+            LMF2Cfg.init_config.min_init_state[0:3], device=self.device, requires_grad=False
+        )  # [x_ratio, y_ratio, z_ratio]
+        self.lmf2_max_init_state_xyz = torch.tensor(
+            LMF2Cfg.init_config.max_init_state[0:3], device=self.device, requires_grad=False
+        )  # [x_ratio, y_ratio, z_ratio]
 
     def get_current_episode_length_steps(self):
         """Compute current episode length in steps based on curriculum level."""
@@ -342,32 +366,31 @@ class TrackFollowTask(NavigationTask):
 
         return bbox
 
-    def save_segmentation_visualization(self, save_every_n_steps=1):
+    def create_segmentation_visualization(self, env_id=0, return_figure=False):
         """
-        Save segmentation mask visualization with bounding box overlay.
-        Saves images from the first environment (env_id=0) every N steps.
+        Create segmentation mask visualization with bounding box overlay.
+        Can return the figure for wandb logging or save to disk.
 
         Args:
-            save_every_n_steps: Save visualization every N steps (default: 200)
+            env_id: Environment ID to visualize (default: 0)
+            return_figure: If True, return the figure object instead of saving (default: False)
+
+        Returns:
+            If return_figure=True, returns the matplotlib figure. Otherwise returns None.
 
         """
         if "segmentation_pixels" not in self.obs_dict:
-            return
+            return None
 
-        # Only save every N steps to avoid too many files
-        if self.num_task_steps % save_every_n_steps != 0:
-            return
-
-        env_id = 0  # First environment
         cam_id = 0  # First camera
 
-        # Get segmentation mask
+        # Get segmentation mask - only for the specified env_id
         seg_mask = self.obs_dict["segmentation_pixels"][env_id, cam_id].cpu().numpy()
         height, width = seg_mask.shape
 
-        # Extract bounding box
-        target_bbox = self.extract_target_bbox_from_segmentation(self.obs_dict["segmentation_pixels"])
-        bbox_normalized = target_bbox[env_id].cpu().numpy()  # [x_min, y_min, x_max, y_max] in [0, 1]
+        # Use cached bounding box (already computed in step() for all envs, but we only use env_id's)
+        # This avoids recomputing bboxes for all environments
+        bbox_normalized = self.cached_target_bbox[env_id].cpu().numpy()  # [x_min, y_min, x_max, y_max] in [0, 1]
 
         # Create visualization for segmentation mask
         fig, ax = plt.subplots(1, 1, figsize=(12, 8))
@@ -423,14 +446,37 @@ class TrackFollowTask(NavigationTask):
         ax.set_title(f"Segmentation Mask with Bounding Box - Step {self.num_task_steps}", fontsize=14)
         ax.axis("off")
 
-        # Save segmentation image
-        save_path = self.vis_save_dir / f"seg_bbox_step_{self.num_task_steps:06d}.png"
-        plt.savefig(str(save_path), dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        if return_figure:
+            return fig
+        else:
+            # Save segmentation image
+            save_path = self.vis_save_dir / f"seg_bbox_step_{self.num_task_steps:06d}.png"
+            plt.savefig(str(save_path), dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            logger.info(f"Saved segmentation visualization to {save_path}")
+            return None
 
-        logger.info(f"Saved segmentation visualization to {save_path}")
+    def save_segmentation_visualization(self, save_every_n_steps=1):
+        """
+        Save segmentation mask visualization with bounding box overlay.
+        Saves images from the first environment (env_id=0) every N steps.
+
+        Args:
+            save_every_n_steps: Save visualization every N steps (default: 200)
+
+        """
+        if "segmentation_pixels" not in self.obs_dict:
+            return
+
+        # Only save every N steps to avoid too many files
+        if self.num_task_steps % save_every_n_steps != 0:
+            return
+
+        self.create_segmentation_visualization(env_id=0, return_figure=False)
 
         # Optionally save depth image alongside
+        env_id = 0  # First environment
+        cam_id = 0  # First camera
         if "depth_range_pixels" in self.obs_dict:
             depth_img = self.obs_dict["depth_range_pixels"][env_id, cam_id].cpu().numpy()
 
@@ -536,14 +582,22 @@ class TrackFollowTask(NavigationTask):
             return torch.tensor(env_ids, device=self.device, dtype=torch.long)
         return env_ids.to(self.device)
 
-    def _resample_positions_within_bounds(self, env_ids):
-        """Resample positions within curriculum bounds for specified environments."""
+    def _resample_positions_within_bounds(self, env_ids, min_ratio_xyz, max_ratio_xyz):
+        """
+        Resample positions within curriculum bounds for specified environments.
+
+        Args:
+            env_ids: Environment IDs to resample positions for
+            min_ratio_xyz: Minimum x, y, z ratios (shape: [num_envs, 3])
+            max_ratio_xyz: Maximum x, y, z ratios (shape: [num_envs, 3])
+
+        """
         env_ids_tensor = self._ensure_env_ids_tensor(env_ids)
         current_bounds_min, current_bounds_max = self.get_current_bounds()
 
         random_ratios = torch_rand_float_tensor(
-            torch.zeros((len(env_ids_tensor), 3), device=self.device),
-            torch.ones((len(env_ids_tensor), 3), device=self.device),
+            min_ratio_xyz,
+            max_ratio_xyz,
         )
 
         return torch_interpolate_ratio(
@@ -575,7 +629,12 @@ class TrackFollowTask(NavigationTask):
             return
 
         env_ids_tensor = self._ensure_env_ids_tensor(env_ids)
-        new_positions = self._resample_positions_within_bounds(env_ids_tensor)
+        # Expand target config ratios to match number of environments
+        target_min_ratio_xyz = self.target_min_state_ratio_xyz.unsqueeze(0).expand(len(env_ids_tensor), -1)
+        target_max_ratio_xyz = self.target_max_state_ratio_xyz.unsqueeze(0).expand(len(env_ids_tensor), -1)
+        new_positions = self._resample_positions_within_bounds(
+            env_ids_tensor, target_min_ratio_xyz, target_max_ratio_xyz
+        )
         self.target_position[env_ids_tensor] = new_positions
 
         if self.target_asset_idx is not None and hasattr(self.sim_env, "asset_manager"):
@@ -904,7 +963,17 @@ class TrackFollowTask(NavigationTask):
 
             if torch.any(out_of_bounds):
                 out_of_bounds_env_ids = env_ids_tensor[out_of_bounds]
-                new_positions = self._resample_positions_within_bounds(out_of_bounds_env_ids)
+                # Use LMF2Cfg init_state values for resampling (explicitly use LMF2Cfg instead of robot config)
+                num_out_of_bounds = len(out_of_bounds_env_ids)
+                lmf2_min_ratio_xyz = self.lmf2_min_init_state_xyz.unsqueeze(0).expand(
+                    num_out_of_bounds, -1
+                )  # [x_ratio, y_ratio, z_ratio]
+                lmf2_max_ratio_xyz = self.lmf2_max_init_state_xyz.unsqueeze(0).expand(
+                    num_out_of_bounds, -1
+                )  # [x_ratio, y_ratio, z_ratio]
+                new_positions = self._resample_positions_within_bounds(
+                    out_of_bounds_env_ids, lmf2_min_ratio_xyz, lmf2_max_ratio_xyz
+                )
 
                 robot_state = self.sim_env.robot_manager.robot.robot_state
                 robot_state[out_of_bounds_env_ids, 0:3] = new_positions
@@ -932,6 +1001,10 @@ class TrackFollowTask(NavigationTask):
         self.grace_period_counter[env_ids] = 0
         self.exploration_visited_grid[env_ids] = False
         self.cached_prev_actions[env_ids] = 0.0
+
+        # Reset episode done tracking for reset environments
+        env_ids_tensor = self._ensure_env_ids_tensor(env_ids)
+        self.prev_episode_done[env_ids_tensor] = False
 
         if len(env_ids) > 0 and len(env_ids) <= 4:
             env_ids_list = env_ids.cpu().numpy().tolist() if isinstance(env_ids, torch.Tensor) else env_ids
@@ -1016,11 +1089,37 @@ class TrackFollowTask(NavigationTask):
         # rendering happens at the post-reward calculation step since the newer measurement is required to be
         # sent to the RL algorithm as an observation and it helps if the camera image is updated then
         reset_envs = self.sim_env.post_reward_calculation_step()
+
+        # Log segmentation visualization to wandb when env 0's episode ends
         if len(reset_envs) > 0:
+            reset_envs_tensor = (
+                reset_envs if isinstance(reset_envs, torch.Tensor) else torch.tensor(reset_envs, device=self.device)
+            )
+            # Check if env 0 is in the reset list (episode ending)
+            env_0_ending = False
+            if isinstance(reset_envs_tensor, torch.Tensor):
+                env_0_ending = (reset_envs_tensor == 0).any().item()
+            else:
+                env_0_ending = 0 in reset_envs_tensor
+
+            if env_0_ending and not self.prev_episode_done[0]:
+                # Episode just ended for env 0, log visualization to wandb
+                self.log_segmentation_to_wandb(env_id=0)
+                # Clear frames after logging (will be reset when new episode starts)
+                self.segmentation_frames_env0 = []
+
+            # Update previous episode done state for reset environments
+            self.prev_episode_done[reset_envs_tensor] = True
             self.reset_idx(reset_envs)
+            # Reset tracking after reset (episode has started fresh)
+            self.prev_episode_done[reset_envs_tensor] = False
         self.num_task_steps += 1
         # do stuff with the image observations here
         self.process_image_observation()
+
+        # Collect segmentation frame for env 0 to build episode GIF (only if episode is active)
+        if "segmentation_pixels" in self.obs_dict and not self.prev_episode_done[0]:
+            self._collect_segmentation_frame(env_id=0)
         self.post_image_reward_addition()
         if self.task_config.return_state_before_reset == False:
             return_tuple = self.get_return_tuple()
@@ -1075,6 +1174,160 @@ class TrackFollowTask(NavigationTask):
                     f"Found NaN/Inf in privileged observations. NaN count: {torch.sum(priv_nan_mask)}, Inf count: {torch.sum(priv_inf_mask)}"
                 )
                 self.task_obs["priviliged_obs"][priv_nan_mask | priv_inf_mask] = 0.0
+
+    def _collect_segmentation_frame(self, env_id=0):
+        """
+        Collect a segmentation frame for the specified environment to build an episode GIF.
+
+        Args:
+            env_id: Environment ID to collect frame from (default: 0)
+
+        """
+        if "segmentation_pixels" not in self.obs_dict:
+            return
+
+        cam_id = 0  # First camera
+
+        # Get segmentation mask
+        seg_mask = self.obs_dict["segmentation_pixels"][env_id, cam_id].cpu().numpy()
+        height, width = seg_mask.shape
+
+        # Get bounding box for this frame
+        bbox_normalized = self.cached_target_bbox[env_id].cpu().numpy()
+
+        # Create custom colored image: black for background, white for terrain, colors for other elements
+        seg_colored = np.zeros((height, width, 3), dtype=np.uint8)
+
+        # Background (negative values, typically -2): Black [0, 0, 0]
+        background_mask = seg_mask < 0
+        seg_colored[background_mask] = [0, 0, 0]
+
+        # Terrain (value 0): White [255, 255, 255]
+        terrain_mask = seg_mask == 0
+        seg_colored[terrain_mask] = [255, 255, 255]
+
+        # Other elements (positive values): Use colormap to distinguish different objects
+        other_mask = seg_mask > 0
+        if np.any(other_mask):
+            # Get unique positive values for consistent coloring
+            unique_values = np.unique(seg_mask[other_mask])
+            # Use tab20 colormap for up to 20 different objects, then cycle
+            colors = plt.cm.tab20(np.linspace(0, 1, 20))[:, :3]  # Get RGB values
+            colors = (colors * 255).astype(np.uint8)
+
+            # Map each unique value to a color
+            for idx, val in enumerate(unique_values):
+                color_idx = idx % 20  # Cycle through colors if more than 20 objects
+                mask = seg_mask == val
+                seg_colored[mask] = colors[color_idx]
+
+        # Draw bounding box if target is found
+        if np.any(bbox_normalized != 0):
+            # Convert normalized bbox to pixel coordinates
+            x_min = int(bbox_normalized[0] * width)
+            y_min = int(bbox_normalized[1] * height)
+            x_max = int(bbox_normalized[2] * width)
+            y_max = int(bbox_normalized[3] * height)
+
+            # Draw rectangle on the image
+            seg_colored[y_min : y_min + 3, x_min:x_max] = [255, 0, 0]  # Top edge
+            seg_colored[y_max - 3 : y_max, x_min:x_max] = [255, 0, 0]  # Bottom edge
+            seg_colored[y_min:y_max, x_min : x_min + 3] = [255, 0, 0]  # Left edge
+            seg_colored[y_min:y_max, x_max - 3 : x_max] = [255, 0, 0]  # Right edge
+
+        # Convert to PIL Image and append to frames list
+        frame = Image.fromarray(seg_colored)
+        self.segmentation_frames_env0.append(frame)
+
+    def log_segmentation_to_wandb(self, env_id=0):
+        """
+        Log segmentation visualization GIF to wandb for the specified environment.
+        Creates a GIF from all frames collected during the episode.
+
+        Args:
+            env_id: Environment ID to log (default: 0)
+
+        """
+        try:
+            import wandb
+
+            if wandb.run is None:
+                return
+        except ImportError:
+            logger.debug("wandb not available, skipping segmentation logging")
+            return
+
+        # Check if we have any frames collected
+        if len(self.segmentation_frames_env0) == 0:
+            logger.debug(f"No segmentation frames collected for env {env_id}, skipping GIF creation")
+            return
+
+        # Get episode info for logging context
+        episode_info = {
+            "step": self.num_task_steps,
+            "env_id": env_id,
+            "num_frames": len(self.segmentation_frames_env0),
+        }
+        if "successes" in self.infos:
+            episode_info["success"] = bool(
+                self.infos["successes"][env_id].item()
+                if isinstance(self.infos["successes"], torch.Tensor)
+                else self.infos["successes"][env_id]
+            )
+        if "crashes" in self.infos:
+            episode_info["crashed"] = bool(
+                self.infos["crashes"][env_id].item()
+                if isinstance(self.infos["crashes"], torch.Tensor)
+                else self.infos["crashes"][env_id]
+            )
+        if "timeouts" in self.infos:
+            episode_info["timeout"] = bool(
+                self.infos["timeouts"][env_id].item()
+                if isinstance(self.infos["timeouts"], torch.Tensor)
+                else self.infos["timeouts"][env_id]
+            )
+
+        # Create GIF from collected frames and log to wandb
+        try:
+            import tempfile
+
+            # Save GIF to temporary file
+            with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as tmp_file:
+                gif_path = tmp_file.name
+
+            # Save frames as GIF
+            if len(self.segmentation_frames_env0) > 0:
+                self.segmentation_frames_env0[0].save(
+                    gif_path,
+                    format="GIF",
+                    save_all=True,
+                    append_images=self.segmentation_frames_env0[1:],
+                    duration=100,  # 100ms per frame
+                    loop=0,  # Loop forever
+                )
+
+                # Log GIF to wandb using file path
+                wandb.log(
+                    {
+                        "segmentation_visualization": wandb.Image(gif_path),
+                        **{f"episode_info/{k}": v for k, v in episode_info.items()},
+                    },
+                    step=self.num_task_steps,
+                )
+                logger.debug(
+                    f"Logged segmentation visualization GIF ({len(self.segmentation_frames_env0)} frames) to wandb for env {env_id} at step {self.num_task_steps}"
+                )
+
+                # Clean up temporary file
+                import contextlib
+
+                with contextlib.suppress(Exception):
+                    os.unlink(gif_path)
+        except Exception as e:
+            logger.warning(f"Failed to log segmentation visualization GIF to wandb: {e}")
+            import traceback
+
+            logger.debug(traceback.format_exc())
 
 
 @torch.jit.script
