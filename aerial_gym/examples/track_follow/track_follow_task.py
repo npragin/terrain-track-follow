@@ -871,6 +871,18 @@ class TrackFollowTask(NavigationTask):
         if "robot_prev_actions" in obs_dict:
             obs_dict["robot_prev_actions"][:] = original_prev_actions
 
+        # Remove disabled reward components from logs
+        if "reward_components" in self.infos:
+            disabled_rewards = [
+                "pos_reward",
+                "very_close_to_goal_reward",
+                "getting_closer_reward",
+                "distance_from_goal_reward",
+                "absolute_action_penalty",
+            ]
+            for reward_name in disabled_rewards:
+                self.infos["reward_components"].pop(reward_name, None)
+
         if self.enable_bounds_termination:
             out_of_bounds = self.check_bounds_violation(obs_dict["robot_position"])
             crashes[:] = torch.where(out_of_bounds, torch.ones_like(crashes), crashes)
