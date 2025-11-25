@@ -818,15 +818,11 @@ class TrackFollowTask(NavigationTask):
             yaw_error,
         )
 
-        # Zero out reward when crashed
+        # Zero out reward when there's no bounding box or when crashed
         yaw_alignment_reward = torch.where(
-            ~crashes,
-            torch.where(
-                self.grace_period_counter > 0,  # Max out reward when in grace period (doesn't interfere with tracking)
-                self.task_config.reward_parameters["yaw_alignment_reward_magnitude"],
-                yaw_alignment_reward,
-            ),
-            torch.zeros((self.sim_env.num_envs,), device=self.device),  # Zero reward if crashed
+            self.cached_has_valid_bbox & ~crashes,
+            yaw_alignment_reward,
+            torch.zeros((self.sim_env.num_envs,), device=self.device),
         )
         return yaw_alignment_reward
 
