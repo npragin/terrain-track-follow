@@ -52,8 +52,8 @@ class BaseDepthCameraConfig(BaseSensorConfig):
     randomize_placement = False
     min_translation = [0.07, -0.06, 0.01]
     max_translation = [0.12, 0.03, 0.04]
-    min_euler_rotation_deg = [0.0, -45.0, 0.0]
-    max_euler_rotation_deg = [0.0, -45.0, 0.0]
+    min_euler_rotation_deg = [0.0, 45.0, 0.0]
+    max_euler_rotation_deg = [0.0, 45.0, 0.0]
 
     # nominal position and orientation (only for Isaac Gym Camera Sensors)
     # If you choose to use Isaac Gym sensors, their position and orientation will NOT be randomized
