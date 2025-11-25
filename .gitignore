@@ -9,3 +9,6 @@ runs/
 nn/
 
 train_dir/
+
+wandb/
+sbatch.*

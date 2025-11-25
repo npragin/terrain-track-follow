@@ -1,6 +1,3 @@
-from aerial_gym.registry.controller_registry import controller_registry
-
-
 class RobotRegistry:
     """
     This class is used to keep track of the robots that are created.
@@ -45,9 +42,7 @@ class RobotRegistry:
         if robot_name not in self.robot_classes:
             raise ValueError(f"Robot {robot_name} not found in robot registry")
         return (
-            self.robot_classes[robot_name](
-                self.robot_configs[robot_name], controller_name, env_config, device
-            ),
+            self.robot_classes[robot_name](self.robot_configs[robot_name], controller_name, env_config, device),
             self.robot_configs[robot_name],
         )
 

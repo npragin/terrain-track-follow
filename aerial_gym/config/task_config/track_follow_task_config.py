@@ -6,44 +6,67 @@ from aerial_gym import AERIAL_GYM_DIRECTORY
 class task_config:
     seed = -1
     sim_name = "base_sim"
-    env_name = "env_with_obstacles"
+    env_name = "procedural_forest"
     robot_name = "lmf2"
     controller_name = "lmf2_velocity_control"
     args = {}
-    num_envs = 1024
+    num_envs = 4
     use_warp = True
     headless = True
     device = "cuda:0"
-    observation_space_dim = 13 + 4 + 64  # root_state + action_dim _+ latent_dims
-    privileged_observation_space_dim = 0
+    observation_space_dim = 82  # 4 (bbox) + 3 (euler) + 1 (z) + 3 (linvel) + 3 (angvel) + 4 (actions) + 64 (latents)
+    privileged_observation_space_dim = 4  # vec_to_target (3D) + dist_to_target (1D) for privileged critic
+    # privileged_observation_space_dim = 0  # vec_to_target (3D) + dist_to_target (1D) for privileged critic
+
     action_space_dim = 4
-    episode_len_steps = 100  # real physics time for simulation is this value multiplied by sim.dt
+    episode_len_steps = 18000  # real physics time for simulation is this value multiplied by sim.dt
+    max_speed = 10.0
 
     return_state_before_reset = False  # False as usually state is returned for next episode after reset
     # user can set the above to true if they so desire
 
-    target_min_ratio = [0.90, 0.1, 0.1]  # target ratio w.r.t environment bounds in x,y,z
-    target_max_ratio = [0.94, 0.90, 0.90]  # target ratio w.r.t environment bounds in x,y,z
+    target_min_ratio = [0.1, 0.1, 0.1]  # target ratio w.r.t environment bounds in x,y,z
+    target_max_ratio = [0.9, 0.9, 0.9]  # target ratio w.r.t environment bounds in x,y,z
+
+    # Minimum number of pixels that must be on the target for the bounding box to register
+    min_pixels_on_target = 30
 
     reward_parameters = {
-        "pos_reward_magnitude": 5.0,
-        "pos_reward_exponent": 1.0 / 3.5,
-        "very_close_to_goal_reward_magnitude": 5.0,
-        "very_close_to_goal_reward_exponent": 2.0,
-        "getting_closer_reward_multiplier": 10.0,
+        # Use during both phases
         "x_action_diff_penalty_magnitude": 0.8,
         "x_action_diff_penalty_exponent": 3.333,
         "z_action_diff_penalty_magnitude": 0.8,
         "z_action_diff_penalty_exponent": 5.0,
-        "yawrate_action_diff_penalty_magnitude": 0.8,
-        "yawrate_action_diff_penalty_exponent": 3.33,
-        "x_absolute_action_penalty_magnitude": 0.1,
-        "x_absolute_action_penalty_exponent": 0.3,
-        "z_absolute_action_penalty_magnitude": 1.5,
-        "z_absolute_action_penalty_exponent": 1.0,
-        "yawrate_absolute_action_penalty_magnitude": 1.5,
-        "yawrate_absolute_action_penalty_exponent": 2.0,
+        "yawrate_action_diff_penalty_magnitude": 3,
+        "yawrate_action_diff_penalty_exponent": 1.0,
         "collision_penalty": -100.0,
+        "target_visibility_reward": 20.0,
+        "target_visibility_grace_period_frames": 50,  # NOTE: This depends on dt
+        # Use during search phase
+        "altitude_reward_magnitude": 10.0,
+        "altitude_reward_exponent": 0.05,
+        "min_desired_altitude_ratio": 0.8,
+        "altitude_above_range_penalty": -10.0,  # Must be negative
+        "exploration_reward_magnitude": 15.0,
+        # Use during track phase
+        "yaw_alignment_reward_magnitude": 1.0,
+        "yaw_alignment_reward_exponent": 1.0,
+        "bbox_size_reward_magnitude": 20.0,
+        "bbox_max_area_ratio": 0.25,
+        "bbox_exponential_rate": 2.3,
+        # Don't use
+        "pos_reward_magnitude": 0.0,
+        "pos_reward_exponent": 0.0,
+        "very_close_to_goal_reward_magnitude": 0.0,
+        "very_close_to_goal_reward_exponent": 0.0,
+        "getting_closer_reward_multiplier": 0.0,
+        "x_absolute_action_penalty_magnitude": 0.0,
+        "x_absolute_action_penalty_exponent": 0.0,
+        "z_absolute_action_penalty_magnitude": 0.0,
+        "z_absolute_action_penalty_exponent": 0.0,
+        "yawrate_absolute_action_penalty_magnitude": 0.0,
+        "yawrate_absolute_action_penalty_exponent": 0.0,
+        "distance_from_goal_reward_multiplier": 0.0,
     }
 
     class vae_config:
@@ -59,13 +82,17 @@ class task_config:
         return_sampled_latent = True
 
     class curriculum:
-        min_level = 15
-        max_level = 50
+        min_level = 1
+        max_level = 100
         check_after_log_instances = 2048
         increase_step = 2
         decrease_step = 1
         success_rate_for_increase = 0.7
         success_rate_for_decrease = 0.6
+
+        enable_bounds_termination = True
+        episode_len_fraction_min = 0.01
+        env_size_scale = 1.0  # Scaling factor for computed environment size
 
         def update_curriculim_level(self, success_rate, current_level):
             if success_rate > self.success_rate_for_increase:
@@ -85,7 +112,7 @@ class task_config:
 
     def action_transformation_function(action):
         clamped_action = torch.clamp(action, -1.0, 1.0)
-        max_speed = 2.0  # [m/s]
+        max_speed = task_config.max_speed
         max_yawrate = torch.pi / 3  # [rad/s]
 
         # clamped_action[:, 0:3] = max_speed * clamped_action[:, 0:3]

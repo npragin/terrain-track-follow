@@ -1,10 +1,8 @@
 from aerial_gym.config.asset_config.env_object_config import (
-    tree_asset_params,
-    object_asset_params,
     bottom_wall,
+    object_asset_params,
+    tree_asset_params,
 )
-
-import numpy as np
 
 
 class ForestEnvCfg:
@@ -20,9 +18,7 @@ class ForestEnvCfg:
         num_physics_steps_per_env_step_std = 0  # number of steps between camera renders std
 
         render_viewer_every_n_steps = 1  # render the viewer every n steps
-        reset_on_collision = (
-            True  # reset environment when contact force on quadrotor is above a threshold
-        )
+        reset_on_collision = True  # reset environment when contact force on quadrotor is above a threshold
         collision_force_threshold = 0.005  # collision force threshold [N]
         create_ground_plane = False  # create a ground plane
         sample_timestep_for_latency = True  # sample the timestep for the latency noise

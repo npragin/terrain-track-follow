@@ -36,7 +36,10 @@ class VAEImageEncoder:
         """
         with torch.no_grad():
             # need to squeeze 0th dimension and unsqueeze 1st dimension to make it work with the VAE
-            image_tensors = image_tensors.squeeze(0).unsqueeze(1)
+            # image_tensors = image_tensors.squeeze(0).unsqueeze(1)
+            # NOTE: TODO: This is hack to get VAE to work with single image. May need to fix this.
+            image_tensors = image_tensors.unsqueeze(1)
+
             x_res, y_res = image_tensors.shape[-2], image_tensors.shape[-1]
             if self.config.image_res != (x_res, y_res):
                 interpolated_image = torch.nn.functional.interpolate(

@@ -1,22 +1,19 @@
-from aerial_gym.env_manager.IGE_env_manager import IsaacGymEnv
-
-from aerial_gym.env_manager.base_env_manager import BaseManager
-from aerial_gym.env_manager.asset_manager import AssetManager
-from aerial_gym.env_manager.warp_env_manager import WarpEnv
-from aerial_gym.env_manager.asset_loader import AssetLoader
-from aerial_gym.robots.robot_manager import RobotManagerIGE
-from aerial_gym.env_manager.obstacle_manager import ObstacleManager
-
-
-from aerial_gym.registry.env_registry import env_config_registry
-from aerial_gym.registry.sim_registry import sim_config_registry
-from aerial_gym.registry.robot_registry import robot_registry
+import math
+import random
 
 import torch
 
+from aerial_gym.env_manager.asset_loader import AssetLoader
+from aerial_gym.env_manager.asset_manager import AssetManager
+from aerial_gym.env_manager.base_env_manager import BaseManager
+from aerial_gym.env_manager.IGE_env_manager import IsaacGymEnv
+from aerial_gym.env_manager.obstacle_manager import ObstacleManager
+from aerial_gym.env_manager.warp_env_manager import WarpEnv
+from aerial_gym.registry.env_registry import env_config_registry
+from aerial_gym.registry.robot_registry import robot_registry
+from aerial_gym.registry.sim_registry import sim_config_registry
+from aerial_gym.robots.robot_manager import RobotManagerIGE
 from aerial_gym.utils.logging import CustomLogger
-
-import math, random
 
 logger = CustomLogger("env_manager")
 
@@ -75,9 +72,7 @@ class EnvManager(BaseManager):
         logger.info("[DONE] Populating environments.")
         self.prepare_sim()
 
-        self.sim_steps = torch.zeros(
-            self.num_envs, dtype=torch.int32, requires_grad=False, device=self.device
-        )
+        self.sim_steps = torch.zeros(self.num_envs, dtype=torch.int32, requires_grad=False, device=self.device)
 
     def create_sim(self, env_cfg, sim_cfg):
         """
@@ -116,9 +111,7 @@ class EnvManager(BaseManager):
         self.asset_loader = AssetLoader(self.global_sim_dict, self.device)
 
         logger.info("Creating robot manager.")
-        self.robot_manager = RobotManagerIGE(
-            self.global_sim_dict, self.robot_name, self.controller_name, self.device
-        )
+        self.robot_manager = RobotManagerIGE(self.global_sim_dict, self.robot_name, self.controller_name, self.device)
         self.global_sim_dict["robot_config"] = self.robot_manager.cfg
         logger.info("[DONE] Creating robot manager.")
 
@@ -130,6 +123,18 @@ class EnvManager(BaseManager):
         """
         # create the simulation instance with the environment and robot manager
         self.create_sim(env_cfg, sim_cfg)
+
+        # Calculate tree count from density if configured
+        if hasattr(self.cfg.env, "tree_density") and "trees" in self.cfg.env_config.asset_type_to_dict_map:
+            tree_config = self.cfg.env_config.asset_type_to_dict_map["trees"]
+            env_area = (self.cfg.env.upper_bound_min[0] - self.cfg.env.lower_bound_min[0]) * (
+                self.cfg.env.upper_bound_min[1] - self.cfg.env.lower_bound_min[1]
+            )
+            tree_config.num_assets = max(1, int(self.cfg.env.tree_density * env_area))
+            logger.info(
+                f"Calculated {tree_config.num_assets} trees from density "
+                f"{self.cfg.env.tree_density} trees/m² and area {env_area:.1f} m²"
+            )
 
         self.robot_manager.create_robot(self.asset_loader)
 
@@ -173,6 +178,15 @@ class EnvManager(BaseManager):
             self.IGE_env.create_ground_plane()
             logger.info("[DONE] Creating ground plane in Isaac Gym Simulation")
 
+        # Create shared heightfield before environment loop (if terrain is enabled)
+        # Isaac Gym heightfields are shared across all environments by design
+        self.shared_terrain_generator = None
+        if hasattr(self.cfg.env, "enable_terrain") and self.cfg.env.enable_terrain:
+            logger.info("Creating shared heightfield for all environments")
+            self.IGE_env.create_shared_heightfield()
+            self.shared_terrain_generator = self.IGE_env.shared_terrain_generator
+            logger.info("Shared heightfield created successfully")
+
         for i in range(self.cfg.env.num_envs):
             logger.debug(f"Populating environment {i}")
             if i % 1000 == 0:
@@ -181,6 +195,11 @@ class EnvManager(BaseManager):
             env_handle = self.IGE_env.create_env(i)
             if self.cfg.env.use_warp:
                 self.warp_env.create_env(i)
+
+            # Add terrain mesh to Warp environment for depth camera raycasting
+            if self.shared_terrain_generator is not None and self.cfg.env.use_warp:
+                terrain_segmentation = 0
+                self.warp_env.add_terrain_mesh_to_env(self.shared_terrain_generator, i, -1, terrain_segmentation)
 
             # add robot asset in the environment
             self.robot_manager.add_robot_to_env(
@@ -261,12 +280,20 @@ class EnvManager(BaseManager):
             if not self.warp_env.prepare_for_simulation(self.global_tensor_dict):
                 raise Exception("Failed to prepare the simulation")
 
-        self.asset_manager = AssetManager(self.global_tensor_dict, self.keep_in_env)
+        # Pass shared terrain generator to AssetManager for height sampling
+        shared_terrain_gen = getattr(self, "shared_terrain_generator", None)
+        global_asset_dicts = getattr(self, "global_asset_dicts", None)
+        self.asset_manager = AssetManager(
+            self.global_tensor_dict,
+            self.keep_in_env,
+            terrain_generator=shared_terrain_gen,
+            cfg=self.cfg,
+            global_asset_dicts=global_asset_dicts,
+            sim_config=self.sim_config,
+        )
         self.asset_manager.prepare_for_sim()
         self.robot_manager.prepare_for_sim(self.global_tensor_dict)
-        self.obstacle_manager = ObstacleManager(
-            self.IGE_env.num_assets_per_env, self.cfg, self.device
-        )
+        self.obstacle_manager = ObstacleManager(self.IGE_env.num_assets_per_env, self.cfg, self.device)
         self.obstacle_manager.prepare_for_sim(self.global_tensor_dict)
         self.num_robot_actions = self.global_tensor_dict["num_robot_actions"]
 
@@ -284,30 +311,65 @@ class EnvManager(BaseManager):
         if self.cfg.env.use_warp:
             self.warp_env.reset_idx(env_ids)
         self.robot_manager.reset_idx(env_ids)
-        self.IGE_env.write_to_sim()
+
+        # Ensure robot spawns above terrain
+        terrain_adjusted_env_ids = None
+        if (
+            hasattr(self, "shared_terrain_generator")
+            and self.shared_terrain_generator is not None
+            and hasattr(self.cfg.env, "enable_terrain")
+            and self.cfg.env.enable_terrain
+        ):
+            robot_state = self.robot_manager.robot.robot_state
+            robot_positions = robot_state[env_ids, 0:3].clone()
+            env_ids_list = env_ids.cpu().numpy() if isinstance(env_ids, torch.Tensor) else env_ids
+
+            terrain_adjusted_env_ids = []
+            terrain_gen = self.shared_terrain_generator
+            heightmap = terrain_gen.generate_heightmap(use_cache=True)
+
+            for idx, env_id in enumerate(env_ids_list):
+                x = robot_positions[idx, 0].item()
+                y = robot_positions[idx, 1].item()
+                terrain_height = terrain_gen.sample_height(x, y, heightmap)
+                terrain_offset = terrain_gen.amplitude / 2.0
+                min_robot_z = terrain_height + terrain_offset + 1.0
+
+                current_z = robot_positions[idx, 2].item()
+                if current_z < min_robot_z:
+                    robot_positions[idx, 2] = min_robot_z
+                    terrain_adjusted_env_ids.append(env_id)
+
+            robot_state[env_ids, 0:3] = robot_positions
+
+            # Store which envs had terrain adjustment applied (for first physics step after reset)
+            # Only mark the env_ids that actually had terrain adjustment applied
+            if terrain_adjusted_env_ids:
+                if not hasattr(self, "_terrain_adjusted_env_ids"):
+                    self._terrain_adjusted_env_ids = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+                # Only mark the env_ids that were actually adjusted, not all reset env_ids
+                terrain_adjusted_env_ids_tensor = torch.tensor(terrain_adjusted_env_ids, device=self.device)
+                self._terrain_adjusted_env_ids[terrain_adjusted_env_ids_tensor] = True
+
+        # Write to Isaac Gym without refreshing robot state during reset
+        # This ensures terrain-adjusted position (if applied) is written correctly
+        self.IGE_env.write_to_sim(refresh_robot_state=False)
+
         self.sim_steps[env_ids] = 0
 
     def log_memory_use(self):
         """
         This function logs the memory usage of the GPU.
         """
-        logger.warning(
-            f"torch.cuda.memory_allocated: {torch.cuda.memory_allocated(0)/1024/1024/1024}GB"
-        )
-        logger.warning(
-            f"torch.cuda.memory_reserved: {torch.cuda.memory_reserved(0)/1024/1024/1024}GB"
-        )
-        logger.warning(
-            f"torch.cuda.max_memory_reserved: {torch.cuda.max_memory_reserved(0)/1024/1024/1024}GB"
-        )
+        logger.warning(f"torch.cuda.memory_allocated: {torch.cuda.memory_allocated(0) / 1024 / 1024 / 1024}GB")
+        logger.warning(f"torch.cuda.memory_reserved: {torch.cuda.memory_reserved(0) / 1024 / 1024 / 1024}GB")
+        logger.warning(f"torch.cuda.max_memory_reserved: {torch.cuda.max_memory_reserved(0) / 1024 / 1024 / 1024}GB")
 
         # Calculate and system RAM usage used by the objects of this class
         total_memory = 0
         for key, value in self.__dict__.items():
             total_memory += value.__sizeof__()
-        logger.warning(
-            f"Total memory used by the objects of this class: {total_memory/1024/1024}MB"
-        )
+        logger.warning(f"Total memory used by the objects of this class: {total_memory / 1024 / 1024}MB")
 
     def reset(self):
         self.reset_idx(env_ids=torch.arange(self.cfg.env.num_envs))
@@ -315,12 +377,22 @@ class EnvManager(BaseManager):
     def pre_physics_step(self, actions, env_actions):
         # first let the robot compute the actions
         self.robot_manager.pre_physics_step(actions)
+        # update target movement (if present)
+        self.asset_manager.step(env_actions)
         # then the asset manager applies the actions here
         self.asset_manager.pre_physics_step(env_actions)
         # apply actions to obstacle manager
         self.obstacle_manager.pre_physics_step(env_actions)
+
+        # Get env_ids that had terrain adjustment applied (for first physics step after reset)
+        preserve_terrain_adjusted_positions = None
+        if hasattr(self, "_terrain_adjusted_env_ids") and torch.any(self._terrain_adjusted_env_ids):
+            preserve_terrain_adjusted_positions = torch.where(self._terrain_adjusted_env_ids)[0]
+            # Clear the flag after using it (only preserve on first physics step after reset)
+            self._terrain_adjusted_env_ids[:] = False
+
         # then the simulator applies them here
-        self.IGE_env.pre_physics_step(actions)
+        self.IGE_env.pre_physics_step(actions, preserve_terrain_adjusted_positions=preserve_terrain_adjusted_positions)
         # if warp is used, the warp environment applies the actions here
         # If you change the mesh, refit() needs to be called (expensive).
         if self.use_warp:
