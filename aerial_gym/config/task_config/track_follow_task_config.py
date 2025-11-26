@@ -84,7 +84,7 @@ class task_config:
     class curriculum:
         min_level = 1
         max_level = 100
-        check_after_log_instances = 2048
+        check_after_log_instances = 128
         increase_step = 2
         decrease_step = 1
         success_rate_for_increase = 0.7
