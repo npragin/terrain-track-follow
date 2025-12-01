@@ -303,6 +303,7 @@ class TrackFollowTask(NavigationTask):
         """
         Compute distances from robot position to each of the 4 curriculum boundary edges.
         Returns softmax-normalized distances over the 4 edges.
+        X and Y distances are normalized separately so x does not depend on y.
 
         Args:
             robot_position: Tensor of shape [num_envs, 3] with robot positions
@@ -320,8 +321,15 @@ class TrackFollowTask(NavigationTask):
         dist_to_max_x = current_bounds_max[:, 0] - robot_position[:, 0]
         dist_to_min_y = robot_position[:, 1] - current_bounds_min[:, 1]
         dist_to_max_y = current_bounds_max[:, 1] - robot_position[:, 1]
-        raw_distances = torch.stack([dist_to_min_x, dist_to_max_x, dist_to_min_y, dist_to_max_y], dim=1)
-        boundary_distances = torch.softmax(raw_distances, dim=1)
+        
+        # Apply softmax separately for x and y dimensions
+        x_distances = torch.stack([dist_to_min_x, dist_to_max_x], dim=1)
+        y_distances = torch.stack([dist_to_min_y, dist_to_max_y], dim=1)
+        x_normalized = torch.softmax(x_distances, dim=1)
+        y_normalized = torch.softmax(y_distances, dim=1)
+        
+        # Concatenate x and y normalized distances
+        boundary_distances = torch.cat([x_normalized, y_normalized], dim=1)
         return boundary_distances
 
     def extract_target_bbox_from_segmentation(self, segmentation_mask):
@@ -881,7 +889,7 @@ class TrackFollowTask(NavigationTask):
             ~crashes,  # Not crashed
             torch.where(
                 target_visible_or_grace,  # Target visible or in grace period
-                self.task_config.reward_parameters["exploration_reward_magnitude"],  # Max reward
+                exploration_reward_value,  # Max reward
                 exploration_reward_value,  # Reward based on unvisited cells
             ),
             torch.zeros((self.sim_env.num_envs,), device=self.device),  # Zero reward if crashed
