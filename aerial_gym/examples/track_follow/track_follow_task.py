@@ -1,6 +1,10 @@
 from aerial_gym.config.asset_config.env_object_config import TARGET_SEMANTIC_ID, target_asset_params
 from aerial_gym.config.robot_config.lmf2_config import LMF2Cfg
-from aerial_gym.task.navigation_task.navigation_task import NavigationTask, exponential_reward_function
+from aerial_gym.task.navigation_task.navigation_task import (
+    NavigationTask,
+    exponential_penalty_function,
+    exponential_reward_function,
+)
 from aerial_gym.utils.logging import CustomLogger
 
 logger = CustomLogger(__name__)
@@ -885,6 +889,30 @@ class TrackFollowTask(NavigationTask):
         )
         return yaw_alignment_reward
 
+    def compute_roll_penalty(self, obs_dict, crashes):
+        """
+        Compute penalty for roll angle deviation from zero.
+        Penalizes non-zero roll angles to encourage level flight.
+        """
+        robot_orientation = obs_dict["robot_orientation"]
+
+        euler_angles = ssa(get_euler_xyz_tensor(robot_orientation))
+        roll = euler_angles[:, 0]
+
+        roll_penalty = exponential_penalty_function(
+            self.task_config.reward_parameters["roll_penalty_magnitude"],
+            self.task_config.reward_parameters["roll_penalty_exponent"],
+            roll,
+        )
+
+        # Zero out penalty when crashed (penalty already applied via collision penalty)
+        roll_penalty = torch.where(
+            ~crashes,
+            roll_penalty,
+            torch.zeros((self.sim_env.num_envs,), device=self.device),
+        )
+        return roll_penalty
+
     def compute_track_follow_rewards(self, obs_dict, crashes):
         """
         Compute additional rewards for track follow task.
@@ -895,6 +923,7 @@ class TrackFollowTask(NavigationTask):
         exploration_reward = self.compute_exploration_reward(obs_dict, crashes)
         yaw_alignment_reward = self.compute_yaw_alignment_reward(obs_dict, crashes)
         bbox_size_reward = self.compute_bbox_size_reward(crashes)
+        roll_penalty = self.compute_roll_penalty(obs_dict, crashes)
 
         if "reward_components" not in self.infos:
             self.infos["reward_components"] = {}
@@ -905,6 +934,7 @@ class TrackFollowTask(NavigationTask):
                 "exploration_reward": exploration_reward,
                 "yaw_alignment_reward": yaw_alignment_reward,
                 "bbox_size_reward": bbox_size_reward,
+                "roll_penalty": roll_penalty,
             }
         )
 
@@ -912,7 +942,7 @@ class TrackFollowTask(NavigationTask):
         MULTIPLICATION_FACTOR_REWARD = 1.0 + (2.0) * self.curriculum_progress_fraction
         total_track_follow_rewards = (
             visibility_reward + altitude_reward + exploration_reward + yaw_alignment_reward + bbox_size_reward
-        ) * MULTIPLICATION_FACTOR_REWARD
+        ) * MULTIPLICATION_FACTOR_REWARD + roll_penalty
 
         return total_track_follow_rewards
 

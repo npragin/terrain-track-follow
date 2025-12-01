@@ -39,6 +39,8 @@ class task_config:
         "z_action_diff_penalty_exponent": 5.0,
         "yawrate_action_diff_penalty_magnitude": 3,
         "yawrate_action_diff_penalty_exponent": 1.0,
+        "roll_penalty_magnitude": 4.0,
+        "roll_penalty_exponent": 12.0,
         "collision_penalty": -100.0,
         "target_visibility_reward": 20.0,
         "target_visibility_grace_period_frames": 50,  # NOTE: This depends on dt
