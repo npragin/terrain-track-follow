@@ -944,7 +944,24 @@ class TrackFollowTask(NavigationTask):
 
         if self.enable_bounds_termination:
             out_of_bounds = self.check_bounds_violation(obs_dict["robot_position"])
+            collision_penalty = self.task_config.reward_parameters["collision_penalty"]
+            base_rewards[:] = torch.where(
+                out_of_bounds,
+                collision_penalty * torch.ones_like(base_rewards),
+                base_rewards,
+            )
+            # Mark out-of-bounds drones as crashed
             crashes[:] = torch.where(out_of_bounds, torch.ones_like(crashes), crashes)
+
+            # Log curriculum bounds violation penalty separately in reward_components
+            if "reward_components" not in self.infos:
+                self.infos["reward_components"] = {}
+            curriculum_bounds_violation_penalty = torch.where(
+                out_of_bounds,
+                collision_penalty * torch.ones((self.sim_env.num_envs,), device=self.device),
+                torch.zeros((self.sim_env.num_envs,), device=self.device),
+            )
+            self.infos["reward_components"]["curriculum_bounds_violation_penalty"] = curriculum_bounds_violation_penalty
 
         track_follow_rewards = self.compute_track_follow_rewards(obs_dict, crashes)
         return base_rewards + track_follow_rewards, crashes
