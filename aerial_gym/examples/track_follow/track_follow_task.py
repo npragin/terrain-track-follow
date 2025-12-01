@@ -132,7 +132,11 @@ class TrackFollowTask(NavigationTask):
         # Calculate exploration grid cell size: 2 * (altitude / cos(angle_from_vertical)) * tan(HFOV/2)
         horizontal_coverage = 2.0 * distance_along_viewing_ray * np.tan(horizontal_fov_rad / 2.0)
         vertical_coverage = 2.0 * distance_along_viewing_ray * np.tan(vertical_fov_rad / 2.0)
-        grid_cell_size = min(horizontal_coverage, vertical_coverage)
+        grid_cell_size_base = min(horizontal_coverage, vertical_coverage)
+
+        # Apply scale factor to grid cell size (allows controlling exploration granularity independently of FOV)
+        exploration_grid_cell_size_scale = getattr(self.task_config, "exploration_grid_cell_size_scale", 1.0)
+        grid_cell_size = grid_cell_size_base * exploration_grid_cell_size_scale
 
         env_bounds_min_all = self.obs_dict["env_bounds_min"][:, 0:2]
         env_bounds_max_all = self.obs_dict["env_bounds_max"][:, 0:2]
@@ -159,7 +163,8 @@ class TrackFollowTask(NavigationTask):
         logger.info(
             f"Exploration grid: {self.exploration_grid_size_x}x{self.exploration_grid_size_y} = "
             f"{self.exploration_total_cells} cells, cell_size={grid_cell_size:.2f}m "
-            f"(HFOV={self.camera_horizontal_fov_deg:.1f}°={horizontal_coverage:.2f}m, "
+            f"(base={grid_cell_size_base:.2f}m, scale={exploration_grid_cell_size_scale:.2f}x, "
+            f"HFOV={self.camera_horizontal_fov_deg:.1f}°={horizontal_coverage:.2f}m, "
             f"VFOV={vertical_fov_deg:.1f}°={vertical_coverage:.2f}m, using {fov_used}, "
             f"alt={desired_altitude:.2f}m, pitch={camera_pitch_deg:.1f}°)"
         )

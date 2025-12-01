@@ -31,6 +31,11 @@ class task_config:
     # Minimum number of pixels that must be on the target for the bounding box to register
     min_pixels_on_target = 30
 
+    # Scale factor for exploration grid cell size (multiplies the FOV-based cell size)
+    # Values > 1.0 make cells larger (coarser exploration), values < 1.0 make cells smaller (finer exploration)
+    # Default 1.0 uses FOV-based cell size without scaling
+    exploration_grid_cell_size_scale = 1.0
+
     reward_parameters = {
         # Use during both phases
         "x_action_diff_penalty_magnitude": 0.8,
