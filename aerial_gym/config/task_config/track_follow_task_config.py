@@ -14,7 +14,7 @@ class task_config:
     use_warp = True
     headless = True
     device = "cuda:0"
-    observation_space_dim = 82  # 4 (bbox) + 3 (euler) + 1 (z) + 3 (linvel) + 3 (angvel) + 4 (actions) + 64 (latents)
+    observation_space_dim = 86  # 4 (bbox) + 3 (euler) + 1 (z) + 3 (linvel) + 3 (angvel) + 4 (actions) + 64 (latents) + 4 (boundary_distances)
     privileged_observation_space_dim = 4  # vec_to_target (3D) + dist_to_target (1D) for privileged critic
     # privileged_observation_space_dim = 0  # vec_to_target (3D) + dist_to_target (1D) for privileged critic
 
@@ -31,6 +31,11 @@ class task_config:
     # Minimum number of pixels that must be on the target for the bounding box to register
     min_pixels_on_target = 30
 
+    # Scale factor for exploration grid cell size (multiplies the FOV-based cell size)
+    # Values > 1.0 make cells larger (coarser exploration), values < 1.0 make cells smaller (finer exploration)
+    # Default 1.0 uses FOV-based cell size without scaling
+    exploration_grid_cell_size_scale = 1.0
+
     reward_parameters = {
         # Use during both phases
         "x_action_diff_penalty_magnitude": 0.8,
@@ -39,6 +44,8 @@ class task_config:
         "z_action_diff_penalty_exponent": 5.0,
         "yawrate_action_diff_penalty_magnitude": 3,
         "yawrate_action_diff_penalty_exponent": 1.0,
+        "roll_penalty_magnitude": 4.0,
+        "roll_penalty_exponent": 12.0,
         "collision_penalty": -100.0,
         "target_visibility_reward": 20.0,
         "target_visibility_grace_period_frames": 50,  # NOTE: This depends on dt
@@ -84,7 +91,7 @@ class task_config:
     class curriculum:
         min_level = 1
         max_level = 100
-        check_after_log_instances = 2048
+        check_after_log_instances = 128
         increase_step = 2
         decrease_step = 1
         success_rate_for_increase = 0.7

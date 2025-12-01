@@ -1,6 +1,10 @@
 from aerial_gym.config.asset_config.env_object_config import TARGET_SEMANTIC_ID, target_asset_params
 from aerial_gym.config.robot_config.lmf2_config import LMF2Cfg
-from aerial_gym.task.navigation_task.navigation_task import NavigationTask, exponential_reward_function
+from aerial_gym.task.navigation_task.navigation_task import (
+    NavigationTask,
+    exponential_penalty_function,
+    exponential_reward_function,
+)
 from aerial_gym.utils.logging import CustomLogger
 
 logger = CustomLogger(__name__)
@@ -128,7 +132,11 @@ class TrackFollowTask(NavigationTask):
         # Calculate exploration grid cell size: 2 * (altitude / cos(angle_from_vertical)) * tan(HFOV/2)
         horizontal_coverage = 2.0 * distance_along_viewing_ray * np.tan(horizontal_fov_rad / 2.0)
         vertical_coverage = 2.0 * distance_along_viewing_ray * np.tan(vertical_fov_rad / 2.0)
-        grid_cell_size = min(horizontal_coverage, vertical_coverage)
+        grid_cell_size_base = min(horizontal_coverage, vertical_coverage)
+
+        # Apply scale factor to grid cell size (allows controlling exploration granularity independently of FOV)
+        exploration_grid_cell_size_scale = getattr(self.task_config, "exploration_grid_cell_size_scale", 1.0)
+        grid_cell_size = grid_cell_size_base * exploration_grid_cell_size_scale
 
         env_bounds_min_all = self.obs_dict["env_bounds_min"][:, 0:2]
         env_bounds_max_all = self.obs_dict["env_bounds_max"][:, 0:2]
@@ -155,7 +163,8 @@ class TrackFollowTask(NavigationTask):
         logger.info(
             f"Exploration grid: {self.exploration_grid_size_x}x{self.exploration_grid_size_y} = "
             f"{self.exploration_total_cells} cells, cell_size={grid_cell_size:.2f}m "
-            f"(HFOV={self.camera_horizontal_fov_deg:.1f}°={horizontal_coverage:.2f}m, "
+            f"(base={grid_cell_size_base:.2f}m, scale={exploration_grid_cell_size_scale:.2f}x, "
+            f"HFOV={self.camera_horizontal_fov_deg:.1f}°={horizontal_coverage:.2f}m, "
             f"VFOV={vertical_fov_deg:.1f}°={vertical_coverage:.2f}m, using {fov_used}, "
             f"alt={desired_altitude:.2f}m, pitch={camera_pitch_deg:.1f}°)"
         )
@@ -289,6 +298,31 @@ class TrackFollowTask(NavigationTask):
         below_min = (position < current_bounds_min).any(dim=1)
         above_max = (position > current_bounds_max).any(dim=1)
         return below_min | above_max
+
+    def compute_boundary_distances(self, robot_position):
+        """
+        Compute distances from robot position to each of the 4 curriculum boundary edges.
+        Returns softmax-normalized distances over the 4 edges.
+
+        Args:
+            robot_position: Tensor of shape [num_envs, 3] with robot positions
+
+        Returns:
+            boundary_distances: Tensor of shape [num_envs, 4] with softmax-normalized distances
+                [distance_to_min_x, distance_to_max_x, distance_to_min_y, distance_to_max_y]
+
+        """
+        if not self.enable_bounds_termination:
+            return torch.zeros((robot_position.shape[0], 4), device=self.device, dtype=torch.float32)
+
+        current_bounds_min, current_bounds_max = self.get_current_bounds()
+        dist_to_min_x = robot_position[:, 0] - current_bounds_min[:, 0]
+        dist_to_max_x = current_bounds_max[:, 0] - robot_position[:, 0]
+        dist_to_min_y = robot_position[:, 1] - current_bounds_min[:, 1]
+        dist_to_max_y = current_bounds_max[:, 1] - robot_position[:, 1]
+        raw_distances = torch.stack([dist_to_min_x, dist_to_max_x, dist_to_min_y, dist_to_max_y], dim=1)
+        boundary_distances = torch.softmax(raw_distances, dim=1)
+        return boundary_distances
 
     def extract_target_bbox_from_segmentation(self, segmentation_mask):
         """
@@ -885,6 +919,30 @@ class TrackFollowTask(NavigationTask):
         )
         return yaw_alignment_reward
 
+    def compute_roll_penalty(self, obs_dict, crashes):
+        """
+        Compute penalty for roll angle deviation from zero.
+        Penalizes non-zero roll angles to encourage level flight.
+        """
+        robot_orientation = obs_dict["robot_orientation"]
+
+        euler_angles = ssa(get_euler_xyz_tensor(robot_orientation))
+        roll = euler_angles[:, 0]
+
+        roll_penalty = exponential_penalty_function(
+            self.task_config.reward_parameters["roll_penalty_magnitude"],
+            self.task_config.reward_parameters["roll_penalty_exponent"],
+            roll,
+        )
+
+        # Zero out penalty when crashed (penalty already applied via collision penalty)
+        roll_penalty = torch.where(
+            ~crashes,
+            roll_penalty,
+            torch.zeros((self.sim_env.num_envs,), device=self.device),
+        )
+        return roll_penalty
+
     def compute_track_follow_rewards(self, obs_dict, crashes):
         """
         Compute additional rewards for track follow task.
@@ -895,6 +953,7 @@ class TrackFollowTask(NavigationTask):
         exploration_reward = self.compute_exploration_reward(obs_dict, crashes)
         yaw_alignment_reward = self.compute_yaw_alignment_reward(obs_dict, crashes)
         bbox_size_reward = self.compute_bbox_size_reward(crashes)
+        roll_penalty = self.compute_roll_penalty(obs_dict, crashes)
 
         if "reward_components" not in self.infos:
             self.infos["reward_components"] = {}
@@ -905,6 +964,7 @@ class TrackFollowTask(NavigationTask):
                 "exploration_reward": exploration_reward,
                 "yaw_alignment_reward": yaw_alignment_reward,
                 "bbox_size_reward": bbox_size_reward,
+                "roll_penalty": roll_penalty,
             }
         )
 
@@ -912,7 +972,7 @@ class TrackFollowTask(NavigationTask):
         MULTIPLICATION_FACTOR_REWARD = 1.0 + (2.0) * self.curriculum_progress_fraction
         total_track_follow_rewards = (
             visibility_reward + altitude_reward + exploration_reward + yaw_alignment_reward + bbox_size_reward
-        ) * MULTIPLICATION_FACTOR_REWARD
+        ) * MULTIPLICATION_FACTOR_REWARD + roll_penalty
 
         return total_track_follow_rewards
 
@@ -944,7 +1004,24 @@ class TrackFollowTask(NavigationTask):
 
         if self.enable_bounds_termination:
             out_of_bounds = self.check_bounds_violation(obs_dict["robot_position"])
+            collision_penalty = self.task_config.reward_parameters["collision_penalty"]
+            base_rewards[:] = torch.where(
+                out_of_bounds,
+                collision_penalty * torch.ones_like(base_rewards),
+                base_rewards,
+            )
+            # Mark out-of-bounds drones as crashed
             crashes[:] = torch.where(out_of_bounds, torch.ones_like(crashes), crashes)
+
+            # Log curriculum bounds violation penalty separately in reward_components
+            if "reward_components" not in self.infos:
+                self.infos["reward_components"] = {}
+            curriculum_bounds_violation_penalty = torch.where(
+                out_of_bounds,
+                collision_penalty * torch.ones((self.sim_env.num_envs,), device=self.device),
+                torch.zeros((self.sim_env.num_envs,), device=self.device),
+            )
+            self.infos["reward_components"]["curriculum_bounds_violation_penalty"] = curriculum_bounds_violation_penalty
 
         track_follow_rewards = self.compute_track_follow_rewards(obs_dict, crashes)
         return base_rewards + track_follow_rewards, crashes
@@ -1134,6 +1211,7 @@ class TrackFollowTask(NavigationTask):
         self.task_obs["observations"][:, 11:14] = self.obs_dict["robot_body_angvel"]
         self.task_obs["observations"][:, 14:18] = self.obs_dict["robot_actions"]
         self.task_obs["observations"][:, 18:82] = self.image_latents
+        self.task_obs["observations"][:, 82:86] = self.compute_boundary_distances(self.obs_dict["robot_position"])
 
         # Compute privileged observations for critic: vec_to_target (3D) and dist_to_target (1D)
         if self.task_config.privileged_observation_space_dim > 0 and "priviliged_obs" in self.task_obs:
