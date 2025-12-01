@@ -16,7 +16,7 @@ class BaseDepthCameraConfig(BaseSensorConfig):
     width = 240  # 480
     horizontal_fov_deg = 87.000
     max_range = 10.0
-    min_range = 10.0
+    min_range = 0.2
 
     # Type of camera (depth, range, pointcloud, segmentation)
     # You can combine: (depth+segmentation), (range+segmentation), (pointcloud+segmentation)
