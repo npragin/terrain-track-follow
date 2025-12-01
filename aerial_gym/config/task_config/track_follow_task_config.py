@@ -14,7 +14,7 @@ class task_config:
     use_warp = True
     headless = True
     device = "cuda:0"
-    observation_space_dim = 82  # 4 (bbox) + 3 (euler) + 1 (z) + 3 (linvel) + 3 (angvel) + 4 (actions) + 64 (latents)
+    observation_space_dim = 86  # 4 (bbox) + 3 (euler) + 1 (z) + 3 (linvel) + 3 (angvel) + 4 (actions) + 64 (latents) + 4 (boundary_distances)
     privileged_observation_space_dim = 4  # vec_to_target (3D) + dist_to_target (1D) for privileged critic
     # privileged_observation_space_dim = 0  # vec_to_target (3D) + dist_to_target (1D) for privileged critic
 

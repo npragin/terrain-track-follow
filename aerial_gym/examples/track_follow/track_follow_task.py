@@ -299,6 +299,31 @@ class TrackFollowTask(NavigationTask):
         above_max = (position > current_bounds_max).any(dim=1)
         return below_min | above_max
 
+    def compute_boundary_distances(self, robot_position):
+        """
+        Compute distances from robot position to each of the 4 curriculum boundary edges.
+        Returns softmax-normalized distances over the 4 edges.
+
+        Args:
+            robot_position: Tensor of shape [num_envs, 3] with robot positions
+
+        Returns:
+            boundary_distances: Tensor of shape [num_envs, 4] with softmax-normalized distances
+                [distance_to_min_x, distance_to_max_x, distance_to_min_y, distance_to_max_y]
+
+        """
+        if not self.enable_bounds_termination:
+            return torch.zeros((robot_position.shape[0], 4), device=self.device, dtype=torch.float32)
+
+        current_bounds_min, current_bounds_max = self.get_current_bounds()
+        dist_to_min_x = robot_position[:, 0] - current_bounds_min[:, 0]
+        dist_to_max_x = current_bounds_max[:, 0] - robot_position[:, 0]
+        dist_to_min_y = robot_position[:, 1] - current_bounds_min[:, 1]
+        dist_to_max_y = current_bounds_max[:, 1] - robot_position[:, 1]
+        raw_distances = torch.stack([dist_to_min_x, dist_to_max_x, dist_to_min_y, dist_to_max_y], dim=1)
+        boundary_distances = torch.softmax(raw_distances, dim=1)
+        return boundary_distances
+
     def extract_target_bbox_from_segmentation(self, segmentation_mask):
         """
         Extract 2D bounding box of TARGET_SEMANTIC_ID from segmentation mask. Uses vectorized operations for efficiency.
@@ -1186,6 +1211,7 @@ class TrackFollowTask(NavigationTask):
         self.task_obs["observations"][:, 11:14] = self.obs_dict["robot_body_angvel"]
         self.task_obs["observations"][:, 14:18] = self.obs_dict["robot_actions"]
         self.task_obs["observations"][:, 18:82] = self.image_latents
+        self.task_obs["observations"][:, 82:86] = self.compute_boundary_distances(self.obs_dict["robot_position"])
 
         # Compute privileged observations for critic: vec_to_target (3D) and dist_to_target (1D)
         if self.task_config.privileged_observation_space_dim > 0 and "priviliged_obs" in self.task_obs:
