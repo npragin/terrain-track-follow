@@ -327,7 +327,7 @@ class TrackFollowTask(NavigationTask):
         y_distances = torch.stack([dist_to_min_y, dist_to_max_y], dim=1)
         x_normalized = torch.softmax(x_distances, dim=1)
         y_normalized = torch.softmax(y_distances, dim=1)
-        
+
         # Concatenate x and y normalized distances
         boundary_distances = torch.cat([x_normalized, y_normalized], dim=1)
         return boundary_distances
@@ -677,6 +677,17 @@ class TrackFollowTask(NavigationTask):
         new_positions = self._resample_positions_within_bounds(
             env_ids_tensor, target_min_ratio_xyz, target_max_ratio_xyz
         )
+
+        terrain_gen = self.sim_env.shared_terrain_generator
+        heightmap = terrain_gen.generate_heightmap(use_cache=True)
+        terrain_offset = terrain_gen.amplitude / 2.0
+
+        for idx in range(len(env_ids_tensor)):
+            x = new_positions[idx, 0].item()
+            y = new_positions[idx, 1].item()
+            terrain_height = terrain_gen.sample_height(x, y, heightmap)
+            new_positions[idx, 2] = terrain_height + terrain_offset
+
         self.target_position[env_ids_tensor] = new_positions
 
         if self.target_asset_idx is not None and hasattr(self.sim_env, "asset_manager"):
@@ -1059,6 +1070,20 @@ class TrackFollowTask(NavigationTask):
                 new_positions = self._resample_positions_within_bounds(
                     out_of_bounds_env_ids, lmf2_min_ratio_xyz, lmf2_max_ratio_xyz
                 )
+
+                # Adjust z-values to be at least 1.0m above terrain at the sampled x, y positions
+                terrain_gen = self.sim_env.shared_terrain_generator
+                heightmap = terrain_gen.generate_heightmap(use_cache=True)
+                terrain_offset = terrain_gen.amplitude / 2.0
+                min_altitude_above_terrain = 1.0  # Match env_manager behavior
+
+                for idx in range(len(out_of_bounds_env_ids)):
+                    x = new_positions[idx, 0].item()
+                    y = new_positions[idx, 1].item()
+                    terrain_height = terrain_gen.sample_height(x, y, heightmap)
+                    min_robot_z = terrain_height + terrain_offset + min_altitude_above_terrain
+                    # Ensure z is at least min_robot_z, but still respect curriculum bounds
+                    new_positions[idx, 2] = max(new_positions[idx, 2].item(), min_robot_z)
 
                 robot_state = self.sim_env.robot_manager.robot.robot_state
                 robot_state[out_of_bounds_env_ids, 0:3] = new_positions
