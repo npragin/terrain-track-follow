@@ -889,7 +889,7 @@ class TrackFollowTask(NavigationTask):
             ~crashes,  # Not crashed
             torch.where(
                 target_visible_or_grace,  # Target visible or in grace period
-                exploration_reward_value,  # Max reward
+                self.task_config.reward_parameters["exploration_reward_magnitude"],  # Max reward
                 exploration_reward_value,  # Reward based on unvisited cells
             ),
             torch.zeros((self.sim_env.num_envs,), device=self.device),  # Zero reward if crashed

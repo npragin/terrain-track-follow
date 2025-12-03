@@ -13,7 +13,7 @@ params:
     # separate: False
     name: asymmetric_actor_critic
     separate: True
-    actor_obs_dim: 82  # Actor uses first 82 dims (observations), critic uses all 86 dims (observations + privileged)
+    actor_obs_dim: 86  # Actor uses first 86 dims (observations), critic uses all 86 dims (observations + privileged)
     space:
       continuous:
         mu_activation: None
