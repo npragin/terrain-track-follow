@@ -134,6 +134,11 @@ class TrackFollowTask(NavigationTask):
         vertical_coverage = 2.0 * distance_along_viewing_ray * np.tan(vertical_fov_rad / 2.0)
         grid_cell_size_base = min(horizontal_coverage, vertical_coverage)
 
+        # Store base grid cell size for curriculum calculations
+        self.exploration_grid_cell_size_base = torch.tensor(
+            grid_cell_size_base, device=self.device, dtype=torch.float32, requires_grad=False
+        )
+
         # Apply scale factor to grid cell size (allows controlling exploration granularity independently of FOV)
         exploration_grid_cell_size_scale = getattr(self.task_config, "exploration_grid_cell_size_scale", 1.0)
         grid_cell_size = grid_cell_size_base * exploration_grid_cell_size_scale
@@ -195,13 +200,45 @@ class TrackFollowTask(NavigationTask):
             )
 
         # Curriculum-based bounds checking setup
-        self.base_env_bounds_min = self.obs_dict["env_bounds_min"].clone()  # [num_envs, 3]
-        self.base_env_bounds_max = self.obs_dict["env_bounds_max"].clone()  # [num_envs, 3]
+        # Compute per-environment bounds based on grid position
+        # When environments share a heightfield, each should have its own logical region to avoid overlap
+        base_bounds_min = self.obs_dict["env_bounds_min"][0].clone()  # [3] - use first env as base
+        base_bounds_max = self.obs_dict["env_bounds_max"][0].clone()  # [3] - use first env as base
 
-        bounds_size = self.base_env_bounds_max[0] - self.base_env_bounds_min[0]
+        # Compute environment size from base bounds
+        bounds_size = base_bounds_max - base_bounds_min
         env_size_x = float(bounds_size[0].item() if hasattr(bounds_size[0], "item") else bounds_size[0])
         env_size_y = float(bounds_size[1].item() if hasattr(bounds_size[1], "item") else bounds_size[1])
         self.max_env_size = max(env_size_x, env_size_y)
+
+        # Compute per-environment bounds based on grid position
+        # Environments are arranged in a grid: num_per_row = ceil(sqrt(num_envs))
+        num_per_row = int(np.ceil(np.sqrt(self.sim_env.num_envs)))
+
+        # Create per-environment bounds by offsetting based on grid position
+        self.base_env_bounds_min = torch.zeros((self.sim_env.num_envs, 3), device=self.device)
+        self.base_env_bounds_max = torch.zeros((self.sim_env.num_envs, 3), device=self.device)
+
+        for env_id in range(self.sim_env.num_envs):
+            # Compute grid position (row, col) for this environment
+            row = env_id // num_per_row
+            col = env_id % num_per_row
+
+            # Offset bounds based on grid position
+            x_offset = col * env_size_x
+            y_offset = row * env_size_y
+
+            # Set bounds for this environment
+            self.base_env_bounds_min[env_id, 0] = base_bounds_min[0] + x_offset
+            self.base_env_bounds_min[env_id, 1] = base_bounds_min[1] + y_offset
+            self.base_env_bounds_min[env_id, 2] = base_bounds_min[2]  # Z remains the same
+
+            self.base_env_bounds_max[env_id, 0] = base_bounds_min[0] + x_offset + env_size_x
+            self.base_env_bounds_max[env_id, 1] = base_bounds_min[1] + y_offset + env_size_y
+            self.base_env_bounds_max[env_id, 2] = base_bounds_max[2]  # Z remains the same
+
+        # Update exploration bounds to use per-environment bounds (XY only)
+        self.exploration_env_bounds_min = self.base_env_bounds_min[:, 0:2]
 
         self.enable_bounds_termination = self.task_config.curriculum.enable_bounds_termination
 
@@ -265,9 +302,9 @@ class TrackFollowTask(NavigationTask):
         t_seconds = current_episode_len_steps * self.dt
 
         grid_cell_size = float(
-            self.exploration_grid_cell_size.item()
-            if hasattr(self.exploration_grid_cell_size, "item")
-            else self.exploration_grid_cell_size
+            self.exploration_grid_cell_size_base.item()
+            if hasattr(self.exploration_grid_cell_size_base, "item")
+            else self.exploration_grid_cell_size_base
         )
         env_width = compute_env_size(
             t_seconds, self.drone_max_speed, grid_cell_size, self.max_env_size, self.env_size_scale
@@ -321,7 +358,7 @@ class TrackFollowTask(NavigationTask):
         dist_to_max_x = current_bounds_max[:, 0] - robot_position[:, 0]
         dist_to_min_y = robot_position[:, 1] - current_bounds_min[:, 1]
         dist_to_max_y = current_bounds_max[:, 1] - robot_position[:, 1]
-        
+
         # Apply softmax separately for x and y dimensions
         x_distances = torch.stack([dist_to_min_x, dist_to_max_x], dim=1)
         y_distances = torch.stack([dist_to_min_y, dist_to_max_y], dim=1)
